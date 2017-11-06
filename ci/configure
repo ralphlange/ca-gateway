@@ -1,7 +1,0 @@
-#!/usr/bin/env sh
-set -e
-
-# Generate configure/RELEASE.local
-cat > configure/RELEASE.local << EOF
-EPICS_BASE=/usr/lib/epics
-EOF

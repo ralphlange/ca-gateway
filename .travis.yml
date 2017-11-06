@@ -1,16 +1,24 @@
 sudo: required
+dist: trusty
 language: cpp
 
 env:
-  - EPICS_BASE=/usr/lib/epics EPICS_HOST_ARCH=linux-x86_64
+ - BASE=3.16
+ - BASE=3.16 STATIC=YES
+# - BASE=3.16 STATIC=YES EXTRA=CMD_CXXFLAGS=-std=c++11
+# - BASE=3.16 CMPLR=clang
+# - BASE=3.15
+# - BASE=3.15 STATIC=YES
+# - BASE=3.14
+# - BASE=3.14 STATIC=YES
 
 before_install:
-  - sh ci/install-packages     # Install EPICS Base
-  - sh ci/configure            # Configure module
+ - sudo apt-get update -qq
+ - sudo apt-get install python-nose
 
 install:
-  - sudo pip install pyepics
+ - sh .ci/travis-prepare.sh
+ - sudo pip install pyepics nose-tap
 
 script:
-  - make
-  - make runtests
+ - sh .ci/travis-build.sh
