@@ -1554,27 +1554,31 @@ void gatePvData::propEventCB(EVENT_ARGS args)
         // only sends event_data and does ADD transactions
         if(pv->active())
         {
-            gateDebug2(5,"gatePvData::propEventCB() %s PV %d\n",pv->getStateName(), pv->propGetPending());
+            gateDebug3(5,"gatePvData::propEventCB() %s PV %s propGetPending %d\n",pv->getStateName(),pv->name(),pv->propGetPending());
             if(pv->propGetPending()) {
-                gateDebug1(5,"gatePvData::propEventCB() Ignore first event %s PV\n",pv->getStateName());
+                gateDebug1(5,"gatePvData::propEventCB() Ignore first propEvent %s PV\n",pv->getStateName());
                 pv->markPropNoGetPending();
                 return;
             }
 
+            gateDebug1(3,"gatePvData::propEventCB() %s PV runDataCB\n",pv->getStateName());
             if ((dd = pv->runDataCB(&args)))  // Create the attributes gdd
             {
 #if DEBUG_BEAM
                 printf("  dd=%p needAddRemove=%d\n", dd, pv->needAddRemove());
 #endif
                 // Update attribute cache
+                gateDebug2(3,"gatePvData::propEventCB() %s PV %s setPvData\n",pv->getStateName(),pv->name());
                 pv->vc->setPvData(dd);
             }
 
+            gateDebug2(4,"gatePvData::propEventCB() %s PV %s runValueDataCB\n",pv->getStateName(),pv->name());
             if ((dd = pv->runValueDataCB(&args)))  // Create the value gdd
             {
 #if DEBUG_BEAM
                 printf("  dd=%p needAddRemove=%d\n", dd, pv->needAddRemove());
 #endif
+                gateDebug2(3,"gatePvData::propEventCB() %s PV %s setEventData\n",pv->getStateName(),pv->name());
                 pv->vc->setEventData(dd);
 
                 if (pv->needAddRemove())
@@ -1670,7 +1674,7 @@ void gatePvData::getCB(EVENT_ARGS args)
     pv->markNoCtrlGetPending();
     if (pv->active()) {
         if (args.status == ECA_NORMAL) {
-            gateDebug1(5,"gatePvData::getCB() %s PV\n",pv->getStateName());
+            gateDebug2(5,"gatePvData::getCB() %s PV %s runDataCB\n",pv->getStateName(),pv->name());
             // Update property cache with received property data
             dd = pv->runDataCB(&args);
             if (dd)
@@ -1699,6 +1703,7 @@ void gatePvData::getCB(EVENT_ARGS args)
 
             if (args.status == ECA_NORMAL) {
                 // Update value cache with received data
+                gateDebug2(3,"gatePvData::getCB() %s PV %s runValueDataCB\n",pv->getStateName(),pv->name());
                 dd = pv->runValueDataCB(&args);
                 if (dd)
                     pv->vc->setEventData(dd);
@@ -2033,7 +2038,7 @@ gdd* gatePvData::eventStringCB(EVENT_ARGS * pArgs)
 
 gdd* gatePvData::eventEnumCB(EVENT_ARGS * pArgs)
 {
-	gateDebug0(10,"gatePvData::eventEnumCB\n");
+    gateDebug1(10,"gatePvData::eventEnumCB PV %s\n", name());
     dbr_time_enum* ts = (dbr_time_enum*)pArgs->dbr;
     aitIndex maxCount = totalElements();
 	gdd* value;
@@ -2073,6 +2078,7 @@ gdd* gatePvData::eventEnumCB(EVENT_ARGS * pArgs)
 #endif
 	value->setStatSevr(ts->status,ts->severity);
 	value->setTimeStamp(&ts->stamp);
+	gateDebug3(12,"gatePvData::eventEnumCB PV %s secPastEpoch=%u, nsec=%u \n", name(), ts->stamp.secPastEpoch, ts->stamp.nsec);
 	return value;
 }
 
