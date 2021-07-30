@@ -73,12 +73,11 @@ void heading(const char *funcname, const char *pvname)
 	fflush(stdout);
 }
 
-void dumpdd(int step, const char *desc, const char * /*name*/, const gdd *dd)
+void dumpdd(int step, const char *desc, const char * pvname, const gdd *dd)
 {
 //	if(strcmp(name,"evans:perf:c3.SCAN")) return;
 	fflush(stderr);
-	printf("(%d) ***********************************************************\n",
-	  step);
+	printf("(%d) PV %s *******************************\n", step, pvname);
 	if (!dd) {
 		printf("%-25s ===== no gdd here (NULL pointer) =====\n",
 			   desc);
