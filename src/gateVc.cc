@@ -578,7 +578,8 @@ int gateVcData::setEventData(gdd* dd)
 	gateDebug2(10,"gateVcData::setEventData(dd=%p) name=%s\n",(void *)dd,name());
 
 #if DEBUG_GDD
-	heading("gateVcData::setEventData",name());
+    heading("gateVcData::setEventData",name());
+    dumpdd(1,"event_data (old value data)",name(),event_data);
     dumpdd(1,"dd (new value data)",name(),dd);
 #endif
 
