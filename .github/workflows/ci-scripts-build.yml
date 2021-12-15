@@ -11,14 +11,14 @@ on:
     paths-ignore:
       - 'docs/*'
       - '.gitattributes'
-      - '**/*.html'
-      - '**/*.md'
+      - '**.html'
+      - '**.md'
   pull_request:
     paths-ignore:
       - 'docs/*'
       - '.gitattributes'
-      - '**/*.html'
-      - '**/*.md'
+      - '**.html'
+      - '**.md'
 
 env:
   SETUP_PATH: .ci-local:.ci
