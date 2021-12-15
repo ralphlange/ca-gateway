@@ -1,5 +1,7 @@
 <a target="_blank" href="http://semver.org">![Version][badge.version]</a>
-<a target="_blank" href="https://travis-ci.org/epics-extensions/ca-gateway">![Travis status][badge.travis]</a>
+<a target="_blank" href="https://github.com/epics-extensions/ca-gateway/actions/workflows/ci-scripts-build.yml">![GitHub Actions status][badge.gha]</a>
+<a target="_blank" href="https://www.codacy.com/gh/epics-extensions/ca-gateway">![Codacy grade][badge.codacy]</a>
+
 
 # Channel Access PV Gateway
 
@@ -25,10 +27,13 @@ If you compile the CA Gateway with
 [caPutLog](https://github.com/epics-modules/caPutLog) support,
 a caPutLog version >= 3.5 is required.
 
-## Continuous Integration
+## Continuous Integration and Static Code Analysis
 
 The CI jobs for CA Gateway are provided by
-[Travis](https://travis-ci.org/epics-extensions/ca-gateway).
+[GitHub Actions](https://github.com/epics-extensions/ca-gateway/actions/workflows/ci-scripts-build.yml).
+
+Static Code Analysis is provided by
+[Codacy](https://www.codacy.com).
 
 ## Links
 
@@ -36,5 +41,7 @@ More details are available on the
 [CA Gateway main web page](http://www.aps.anl.gov/epics/extensions/gateway/).
 
 <!-- Links -->
+<!-- Links -->
 [badge.version]: https://badge.fury.io/gh/epics-extensions%2Fca-gateway.svg
-[badge.travis]: https://travis-ci.org/epics-extensions/ca-gateway.svg?branch=master
+[badge.gha]: https://github.com/epics-extensions/ca-gateway/actions/workflows/ci-scripts-build.yml/badge.svg
+[badge.codacy]: https://app.codacy.com/project/badge/Grade/380b43d8acf743eab6b6236a5aa104a4
