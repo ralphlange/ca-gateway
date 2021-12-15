@@ -154,10 +154,12 @@ jobs:
         submodules: true
     - name: Automatic core dumper analysis
       uses: mdavidsaver/ci-core-dumper@master
+      with:
+        extra_gdb: "info auto-load;thread apply all py-bt-full"
     - name: "apt-get install"
       run: |
         sudo apt-get update
-        sudo apt-get -y install qemu-system-x86 g++-mingw-w64-x86-64 gdb
+        sudo apt-get -y install qemu-system-x86 g++-mingw-w64-x86-64 gdb python3-all-dbg
         sudo pip install pyepics nose nose-tap
       if: runner.os == 'Linux'
     - name: "apt-get install ${{ matrix.cmp }}"
