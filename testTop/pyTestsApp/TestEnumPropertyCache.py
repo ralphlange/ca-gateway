@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import gc
 import os
 import unittest
 import epics
@@ -7,7 +8,6 @@ import IOCControl
 import GatewayControl
 import gwtests
 import time
-import subprocess
 
 class TestEnumPropertyCache(unittest.TestCase):
     '''Testing the Gateway PV property cache for ENUM type data (list of state strings)
@@ -43,6 +43,7 @@ class TestEnumPropertyCache(unittest.TestCase):
         self.propSupported = False
         os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
         os.environ["EPICS_CA_ADDR_LIST"] = "localhost:{0} localhost:{1}".format(gwtests.iocPort,gwtests.gwPort)
+        gc.collect()
         ca.initialize_libca()
 
         # Check if IOC supports DBE_PROPERTY

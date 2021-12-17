@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
+import gc
 import os
 import unittest
 import epics
 import IOCControl
 import GatewayControl
 import gwtests
-import time
 
 class TestDBEValue(unittest.TestCase):
     '''Test value updates (client using DBE_VALUE flag) through the Gateway'''
@@ -18,6 +18,7 @@ class TestDBEValue(unittest.TestCase):
         self.gatewayControl.startGateway()
         os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
         os.environ["EPICS_CA_ADDR_LIST"] = "localhost:{0} localhost:{1}".format(gwtests.iocPort,gwtests.gwPort)
+        gc.collect()
         epics.ca.initialize_libca()
         self.eventsReceived = 0
 
@@ -25,12 +26,12 @@ class TestDBEValue(unittest.TestCase):
         epics.ca.finalize_libca()
         self.gatewayControl.stop()
         self.iocControl.stop()
-        
+
     def onChange(self, pvname=None, **kws):
         self.eventsReceived += 1
         if gwtests.verbose:
             print(pvname, " changed to ", kws['value'])
-        
+
     def testValueNoDeadband(self):
         '''DBE_VALUE monitor on an ai - value changes generate events.'''
         # gateway:passive0 is a blank ai record

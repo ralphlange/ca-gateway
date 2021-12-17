@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
+import gc
 import sys
 import os
 import unittest
-import epics
 from epics import ca, dbr
 import IOCControl
 import GatewayControl
 import gwtests
-import time
-import subprocess
 
 class TestStructures(unittest.TestCase):
     '''Testing structures going through the Gateway
@@ -26,6 +24,7 @@ class TestStructures(unittest.TestCase):
         self.eventsReceivedGW = 0
         os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
         os.environ["EPICS_CA_ADDR_LIST"] = "localhost:{0} localhost:{1}".format(gwtests.iocPort,gwtests.gwPort)
+        gc.collect()
         ca.initialize_libca()
 
     def tearDown(self):

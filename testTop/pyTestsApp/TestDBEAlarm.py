@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
+import gc
 import os
 import unittest
 import epics
 import IOCControl
 import GatewayControl
 import gwtests
-import time
 
 class TestDBEAlarm(unittest.TestCase):
     '''Test alarm updates (client using DBE_ALARM flag) through the Gateway'''
@@ -18,6 +18,7 @@ class TestDBEAlarm(unittest.TestCase):
         self.gatewayControl.startGateway()
         os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
         os.environ["EPICS_CA_ADDR_LIST"] = "localhost:{0} localhost:{1}".format(gwtests.iocPort,gwtests.gwPort)
+        gc.collect()
         epics.ca.initialize_libca()
         self.eventsReceived = 0
         self.severityUnchanged = 0
@@ -27,7 +28,7 @@ class TestDBEAlarm(unittest.TestCase):
         epics.ca.finalize_libca()
         self.gatewayControl.stop()
         self.iocControl.stop()
-        
+
     def onChange(self, pvname=None, **kws):
         self.eventsReceived += 1
         if gwtests.verbose:
@@ -35,7 +36,7 @@ class TestDBEAlarm(unittest.TestCase):
         if self.lastSeverity == kws['severity']:
             self.severityUnchanged += 1
         self.lastSeverity = kws['severity']
-        
+
     def testAlarmLevel(self):
         '''DBE_ALARM monitor on an ai with two alarm levels - crossing the level generates updates'''
         # gateway:passiveALRM has HIGH=5 (MINOR) and HIHI=10 (MAJOR)

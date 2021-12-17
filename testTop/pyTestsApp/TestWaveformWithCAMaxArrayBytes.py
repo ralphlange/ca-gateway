@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import gc
 import os
 import unittest
+import epics
 from epics import caget, caput, PV
 import IOCControl
 import GatewayControl
@@ -26,6 +28,8 @@ class TestWaveformWithCAMaxArrayBytes(unittest.TestCase):
         gwtests.setup()
         self.iocControl = IOCControl.IOCControl()
         self.gatewayControl = GatewayControl.GatewayControl()
+        gc.collect()
+        epics.ca.initialize_libca()
 
         # If the bug is present this test is designed to pass the first case
         # and fail the second case

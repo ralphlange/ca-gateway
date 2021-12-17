@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import gc
 import sys
 import os
 import unittest
@@ -25,6 +26,7 @@ class TestCSStudio(unittest.TestCase):
         self.gwStruct  = dict()
         os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
         os.environ["EPICS_CA_ADDR_LIST"] = "localhost:{0} localhost:{1}".format(gwtests.iocPort,gwtests.gwPort)
+        gc.collect()
         ca.initialize_libca()
 
     def tearDown(self):

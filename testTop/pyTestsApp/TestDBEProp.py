@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import gc
 import os
 import unittest
 import epics
@@ -18,6 +19,7 @@ class TestDBEProp(unittest.TestCase):
         self.gatewayControl.startGateway()
         os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
         os.environ["EPICS_CA_ADDR_LIST"] = "localhost:{0} localhost:{1}".format(gwtests.iocPort,gwtests.gwPort)
+        gc.collect()
         epics.ca.initialize_libca()
         self.eventsReceivedGW = 0
         self.eventsReceivedIOC = 0
@@ -26,12 +28,12 @@ class TestDBEProp(unittest.TestCase):
         epics.ca.finalize_libca()
         self.gatewayControl.stop()
         self.iocControl.stop()
-        
+
     def onChangeGW(self, pvname=None, **kws):
         self.eventsReceivedGW += 1
         if gwtests.verbose:
             print(" GW update: ", pvname, " changed to ", kws['value'])
-        
+
     def onChangeIOC(self, pvname=None, **kws):
         self.eventsReceivedIOC += 1
         if gwtests.verbose:
