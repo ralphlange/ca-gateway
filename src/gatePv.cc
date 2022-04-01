@@ -2015,8 +2015,8 @@ gdd* gatePvData::eventStringCB(EVENT_ARGS * pArgs)
         aitFixedString *d, *nd;
         nd = new aitFixedString[maxCount];
 		d=(aitFixedString*)&ts->value;
-        memset(nd, 0, maxCount * sizeof(aitFixedString));
         memcpy(nd, d, count * sizeof(aitFixedString));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitFixedString));
         value = new gddAtomic(GR->appValue, aitEnumFixedString, 1, &count);
 		value->putRef(nd,new gateFixedStringDestruct());
 	}
@@ -2057,8 +2057,8 @@ gdd* gatePvData::eventEnumCB(EVENT_ARGS * pArgs)
         aitEnum16 *d, *nd;
         nd = new aitEnum16[maxCount];
         d = (aitEnum16*)&ts->value;
-        memset(nd, 0, maxCount * sizeof(aitEnum16));
         memcpy(nd, d, count * sizeof(aitEnum16));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitEnum16));
         value = new gddAtomic(GR->appValue, aitEnumInt16, 1, &count);
 		value->putRef(nd,new gateEnumDestruct());
 	}
@@ -2091,8 +2091,8 @@ gdd* gatePvData::eventLongCB(EVENT_ARGS * pArgs)
         aitInt32 *d, *nd;
         nd = new aitInt32[maxCount];
         d = (aitInt32*)&ts->value;
-        memset(nd, 0, maxCount * sizeof(aitInt32));
         memcpy(nd, d, count * sizeof(aitInt32));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitInt32));
         value = new gddAtomic(GR->appValue, aitEnumInt32, 1, &count);
 		value->putRef(nd,new gateIntDestruct());
 	}
@@ -2121,8 +2121,8 @@ gdd* gatePvData::eventCharCB(EVENT_ARGS * pArgs)
         aitInt8 *d, *nd;
         nd = new aitInt8[maxCount];
         d = (aitInt8*)&(ts->value);
-        memset(nd, 0, maxCount * sizeof(aitInt8));
         memcpy(nd, d, count * sizeof(aitInt8));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitInt8));
         value = new gddAtomic(GR->appValue, aitEnumInt8, 1, &count);
 		value->putRef(nd,new gateCharDestruct());
 	}
@@ -2151,8 +2151,8 @@ gdd* gatePvData::eventFloatCB(EVENT_ARGS * pArgs)
         aitFloat32 *d, *nd;
         nd = new aitFloat32[maxCount];
         d = (aitFloat32*)&(ts->value);
-        memset(nd, 0, maxCount * sizeof(aitFloat32));
         memcpy(nd, d, count * sizeof(aitFloat32));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitFloat32));
         value = new gddAtomic(GR->appValue, aitEnumFloat32, 1, &count);
 		value->putRef(nd,new gateFloatDestruct());
 	}
@@ -2181,8 +2181,8 @@ gdd* gatePvData::eventDoubleCB(EVENT_ARGS * pArgs)
         aitFloat64 *d, *nd;
         nd = new aitFloat64[maxCount];
         d = (aitFloat64*)&(ts->value);
-        memset(nd, 0, maxCount * sizeof(aitFloat64));
         memcpy(nd, d, count * sizeof(aitFloat64));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitFloat64));
         value = new gddAtomic(GR->appValue, aitEnumFloat64, 1, &count);
 		value->putRef(nd,new gateDoubleDestruct());
 	}
@@ -2211,8 +2211,8 @@ gdd* gatePvData::eventShortCB(EVENT_ARGS * pArgs)
         aitInt16 *d, *nd;
         nd = new aitInt16[maxCount];
         d = (aitInt16*)&(ts->value);
-        memset(nd, 0, maxCount * sizeof(aitInt16));
         memcpy(nd, d, count * sizeof(aitInt16));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitInt16));
         value = new gddAtomic(GR->appValue, aitEnumInt16, 1, &count);
 		value->putRef(nd,new gateShortDestruct);
 	}
@@ -2274,8 +2274,8 @@ gdd* gatePvData::valueDataEnumCB(EVENT_ARGS * pArgs)
         aitEnum16 *d, *nd;
         nd = new aitEnum16[maxCount];
         d = (aitEnum16*)&ts->value;
-        memset(nd, 0, maxCount * sizeof(aitEnum16));
         memcpy(nd, d, count * sizeof(aitEnum16));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitEnum16));
         value = new gddAtomic(GR->appValue, aitEnumInt16, 1, &count);
 		value->putRef(nd,new gateEnumDestruct());
 	}
@@ -2307,8 +2307,8 @@ gdd* gatePvData::valueDataLongCB(EVENT_ARGS * pArgs)
         aitInt32 *d, *nd;
         nd = new aitInt32[maxCount];
         d = (aitInt32*)&ts->value;
-        memset(nd, 0, maxCount * sizeof(aitInt32));
         memcpy(nd, d, count * sizeof(aitInt32));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitInt32));
         value = new gddAtomic(GR->appValue, aitEnumInt32, 1, &count);
 		value->putRef(nd,new gateIntDestruct());
 	}
@@ -2336,8 +2336,8 @@ gdd* gatePvData::valueDataCharCB(EVENT_ARGS * pArgs)
         aitInt8 *d, *nd;
         nd = new aitInt8[maxCount];
         d = (aitInt8*)&(ts->value);
-        memset(nd, 0, maxCount * sizeof(aitInt8));
         memcpy(nd, d, count * sizeof(aitInt8));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitInt8));
         value = new gddAtomic(GR->appValue, aitEnumInt8, 1, &count);
 		value->putRef(nd,new gateCharDestruct());
 	}
@@ -2365,8 +2365,8 @@ gdd* gatePvData::valueDataFloatCB(EVENT_ARGS * pArgs)
         aitFloat32 *d, *nd;
         nd = new aitFloat32[maxCount];
         d = (aitFloat32*)&(ts->value);
-        memset(nd, 0, maxCount * sizeof(aitFloat32));
         memcpy(nd, d, count * sizeof(aitFloat32));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitFloat32));
         value = new gddAtomic(GR->appValue, aitEnumFloat32, 1, &count);
 		value->putRef(nd,new gateFloatDestruct());
 	}
@@ -2394,8 +2394,8 @@ gdd* gatePvData::valueDataDoubleCB(EVENT_ARGS * pArgs)
         aitFloat64 *d,*nd;
         nd = new aitFloat64[maxCount];
         d = (aitFloat64*)&(ts->value);
-        memset(nd, 0, maxCount * sizeof(aitFloat64));
         memcpy(nd, d, count * sizeof(aitFloat64));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitFloat64));
         value = new gddAtomic(GR->appValue, aitEnumFloat64, 1, &count);
 		value->putRef(nd,new gateDoubleDestruct());
 	}
@@ -2423,8 +2423,8 @@ gdd* gatePvData::valueDataShortCB(EVENT_ARGS * pArgs)
         aitInt16 *d, *nd;
         nd = new aitInt16[maxCount];
         d = (aitInt16*)&(ts->value);
-        memset(nd, 0, maxCount * sizeof(aitInt16));
         memcpy(nd, d, count * sizeof(aitInt16));
+        memset(nd + count, 0, (maxCount - count) * sizeof(aitInt16));
         value = new gddAtomic(GR->appValue, aitEnumInt16, 1, &count);
 		value->putRef(nd,new gateShortDestruct);
 	}
