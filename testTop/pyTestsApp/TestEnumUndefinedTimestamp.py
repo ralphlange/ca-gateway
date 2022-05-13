@@ -9,6 +9,7 @@ import time
 
 UNDEFINED_TIMESTAMP = epics.dbr.EPICS2UNIX_EPOCH
 
+gwtests.verbose = False
 
 def timestamp_to_string(timestamp: float) -> str:
     if timestamp == UNDEFINED_TIMESTAMP or timestamp is None:
@@ -51,21 +52,28 @@ class TestEnumUndefinedTimestamp(unittest.TestCase):
         '''Two caget on an mbbi - both timestamps should be defined.'''
         iocPV = epics.PV("ioc:HUGO:ENUM", auto_monitor=None)
         iocPV.add_callback(self.onChangeIOC)
-        gwPV  = epics.PV("gateway:HUGO:ENUM", auto_monitor=None)
-        gwPV.add_callback(self.onChangeGW)
+        gwPV1  = epics.PV("gateway:HUGO:ENUM", auto_monitor=None)
+        gwPV1.add_callback(self.onChangeGW)
         iocEnumValue = iocPV.get()
-        gwEnumValue  = gwPV.get()
+        gwEnumValue  = gwPV1.get()
 
         # Verify timestamp and value match
         self.assertTrue( iocEnumValue == gwEnumValue,
                 'ioc enum {0} !=\ngw enum {1}'.format( iocEnumValue, gwEnumValue ) )
 
+        # Close current CA context and open a new one
+        epics.ca.detach_context()
+        epics.ca.create_context()
+
+        '''Two caget on an mbbi - both timestamps should be defined.'''
         # Now get the gateway value again and make sure the timestamp is not undefined
-        gwPV.get()
+        gwPV2  = epics.PV("gateway:HUGO:ENUM", auto_monitor=None)
+        gwPV2.add_callback(self.onChangeGW)
+        gwEnumValue  = gwPV2.get()
         if iocPV.status != epics.dbr.AlarmStatus.UDF:
-            self.assertTrue( gwPV.status != epics.dbr.AlarmStatus.UDF,
+            self.assertTrue( gwPV2.status != epics.dbr.AlarmStatus.UDF,
                 '2nd CA get is undefined!' )
-        self.assertTrue( gwPV.timestamp != 0, '2nd CA get timestamp is undefined!' )
+        self.assertTrue( gwPV2.timestamp != 0, '2nd CA get timestamp is undefined!' )
         self.assertTrue( iocEnumValue == gwEnumValue,
                 'ioc enum {0} !=\ngw enum {1}'.format( iocEnumValue, gwEnumValue ) )
 
