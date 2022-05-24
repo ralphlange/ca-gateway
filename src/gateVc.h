@@ -273,6 +273,9 @@ inline void gateVcData::addChan(gateVcChan* chan) { chan_list.add(*chan); }
 inline void gateVcData::removeChan(gateVcChan* chan) {
 	chan_list.remove(*chan); chan->setCasPv(NULL); }
 
+// ---------------------------- utilities ------------------------------------
+extern void heading(const char *funcname, const char *pvname);
+extern void dumpdd(int step, const char *desc, const char * pvname, const gdd *dd);
 #endif
 
 /* **************************** Emacs Editing Sequences ***************** */

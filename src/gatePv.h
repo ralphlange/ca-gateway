@@ -214,7 +214,10 @@ private:
 	void markAbort(void) { abort_flag=1; }
 	void markNoAbort(void) { abort_flag=0; }
 
-	void setState(gatePvState s) { pv_state=s; }
+    void setState(gatePvState s) {
+        pv_state=s;
+        gateDebug2(3,"gatePvData::setState PV %s: %s\n", name(), getStateName());
+    }
 
     gdd* runEventCB(EVENT_ARGS *pArgs) { return (this->*event_func)(pArgs); }
     gdd* runDataCB(EVENT_ARGS *pArgs) { return (this->*data_func)(pArgs); }

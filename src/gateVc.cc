@@ -73,12 +73,11 @@ void heading(const char *funcname, const char *pvname)
 	fflush(stdout);
 }
 
-void dumpdd(int step, const char *desc, const char * /*name*/, const gdd *dd)
+void dumpdd(int step, const char *desc, const char * pvname, const gdd *dd)
 {
 //	if(strcmp(name,"evans:perf:c3.SCAN")) return;
 	fflush(stderr);
-	printf("(%d) ***********************************************************\n",
-	  step);
+    printf("(%d) PV %s *******************************\n", step, pvname);
 	if (!dd) {
 		printf("%-25s ===== no gdd here (NULL pointer) =====\n",
 			   desc);
@@ -579,7 +578,8 @@ int gateVcData::setEventData(gdd* dd)
 	gateDebug2(10,"gateVcData::setEventData(dd=%p) name=%s\n",(void *)dd,name());
 
 #if DEBUG_GDD
-	heading("gateVcData::setEventData",name());
+    heading("gateVcData::setEventData",name());
+    dumpdd(1,"event_data (old value data)",name(),event_data);
     dumpdd(1,"dd (new value data)",name(),dd);
 #endif
 
@@ -771,6 +771,7 @@ void gateVcData::setPvData(gdd* dd)
 
 #if DEBUG_GDD
     heading("gateVcData::setPvData",name());
+    dumpdd(1,"pv_data (old property data)",name(),pv_data);
     dumpdd(1,"dd (new property data)",name(),dd);
 #endif
 
@@ -914,9 +915,12 @@ void gateVcData::copyState(gdd &dd)
 			}
 			convertContainerMemberToAtomic(dd, gddAppType_value, count);
 		}
+#if DEBUG_GDD || DEBUG_ENUM
+        dumpdd(5,"dd(before event_data)",name(),&dd);
+        dumpdd(4,"copyState (new event_data)",name(),event_data);
+#endif
 		table.smartCopy(&dd,event_data);
 #if DEBUG_GDD || DEBUG_ENUM
-		dumpdd(4,"event_data",name(),event_data);
 		dumpdd(5,"dd(after event_data)",name(),&dd);
 #endif
 #if DEBUG_EVENT_DATA

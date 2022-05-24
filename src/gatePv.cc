@@ -200,7 +200,7 @@ gatePvData::gatePvData(gateServer* m,gateAsEntry* pase,const char* name)
 	value_mask|=mrg->valueEventMask();
 
 
-    prop_get_state = 1;
+    prop_get_state = 1; // Being used to ignore first propEventCB
 }
 
 gatePvData::~gatePvData(void)
@@ -1424,6 +1424,9 @@ void gatePvData::eventCB(EVENT_ARGS args)
 					   dd,
 					   pv->needAddRemove());
 #endif
+#if DEBUG_GDD
+                dumpdd(1, "gatePvData::eventCB setEventData", pv->name(), dd);
+#endif
 				stat_sevr_changed = pv->vc->setEventData(dd);
 
 				if(pv->needAddRemove())
@@ -1501,6 +1504,9 @@ void gatePvData::logEventCB(EVENT_ARGS args)
 					   dd,
 					   pv->needAddRemove());
 #endif
+#if DEBUG_GDD
+                dumpdd(1, "gatePvData::logEventCB setEventData", pv->name(), dd);
+#endif
 				pv->vc->setEventData(dd);
 
 				if(pv->needAddRemove())
@@ -1554,28 +1560,40 @@ void gatePvData::propEventCB(EVENT_ARGS args)
         // only sends event_data and does ADD transactions
         if(pv->active())
         {
-            gateDebug2(5,"gatePvData::propEventCB() %s PV %d\n",pv->getStateName(), pv->propGetPending());
+            gateDebug3(5,"gatePvData::propEventCB() %s PV %s propGetPending %d\n",pv->getStateName(),pv->name(),pv->propGetPending());
             if(pv->propGetPending()) {
-                gateDebug1(5,"gatePvData::propEventCB() Ignore first event %s PV\n",pv->getStateName());
+                gateDebug1(5,"gatePvData::propEventCB() Ignore first propEvent %s PV\n",pv->getStateName());
                 pv->markPropNoGetPending();
                 return;
             }
 
+            gateDebug1(3,"gatePvData::propEventCB() %s PV runDataCB\n",pv->getStateName());
             if ((dd = pv->runDataCB(&args)))  // Create the attributes gdd
             {
 #if DEBUG_BEAM
                 printf("  dd=%p needAddRemove=%d\n", dd, pv->needAddRemove());
 #endif
                 // Update attribute cache
+                gateDebug2(3,"gatePvData::propEventCB() %s PV %s setPvData\n",pv->getStateName(),pv->name());
+#if DEBUG_ENUM
+                dumpdd(1, "gatePvData::propEventCB setPvData", pv->name(), dd);
+#endif
                 pv->vc->setPvData(dd);
             }
 
+            gateDebug2(4,"gatePvData::propEventCB() %s PV %s runValueDataCB\n",pv->getStateName(),pv->name());
             if ((dd = pv->runValueDataCB(&args)))  // Create the value gdd
             {
 #if DEBUG_BEAM
                 printf("  dd=%p needAddRemove=%d\n", dd, pv->needAddRemove());
 #endif
-                pv->vc->setEventData(dd);
+                gateDebug2(3,"gatePvData::propEventCB() %s PV %s setEventData\n",pv->getStateName(),pv->name());
+#if DEBUG_ENUM
+                dumpdd(1, "gatePvData::propEventCB setEventData", pv->name(), dd);
+#endif
+                // This dd will have an undefined timeStamp as it comes
+                // from a dbr_ctrl_* structure
+                pv->vc->setEventData(dd);   // Create new setPropData()???
 
                 if (pv->needAddRemove())
                 {
@@ -1670,7 +1688,7 @@ void gatePvData::getCB(EVENT_ARGS args)
     pv->markNoCtrlGetPending();
     if (pv->active()) {
         if (args.status == ECA_NORMAL) {
-            gateDebug1(5,"gatePvData::getCB() %s PV\n",pv->getStateName());
+            gateDebug2(5,"gatePvData::getCB() %s PV %s runDataCB\n",pv->getStateName(),pv->name());
             // Update property cache with received property data
             dd = pv->runDataCB(&args);
             if (dd)
@@ -1699,9 +1717,14 @@ void gatePvData::getCB(EVENT_ARGS args)
 
             if (args.status == ECA_NORMAL) {
                 // Update value cache with received data
+                gateDebug2(3,"gatePvData::getCB() %s PV %s runValueDataCB\n",pv->getStateName(),pv->name());
                 dd = pv->runValueDataCB(&args);
-                if (dd)
+                if (dd) {
+#if DEBUG_GDD
+                    dumpdd(1, "gatePvData::getCB runValueDataCB setEventData", pv->name(), dd);
+#endif
                     pv->vc->setEventData(dd);
+                }
 
                 if (pv->needAddRemove() && !pv->vc->needPosting()) {
                     gateDebug0(5, "gatePvData::getCB() need add/remove\n");
@@ -1764,8 +1787,12 @@ void gatePvData::getTimeCB(EVENT_ARGS args)
 		{
 			gateDebug1(5,"gatePvData::getTimeCB() %s PV\n",pv->getStateName());
             dd = pv->runEventCB(&args);
-            if (dd)
+            if (dd) {
+#if DEBUG_GDD
+                dumpdd(1, "gatePvData::getTimeCB setEventData", pv->name(), dd);
+#endif
                 pv->vc->setEventData(dd);
+            }
 
 			/* flush async get request */
 			if(pv->needAddRemove() && !pv->vc->needPosting())
@@ -2033,7 +2060,7 @@ gdd* gatePvData::eventStringCB(EVENT_ARGS * pArgs)
 
 gdd* gatePvData::eventEnumCB(EVENT_ARGS * pArgs)
 {
-	gateDebug0(10,"gatePvData::eventEnumCB\n");
+    gateDebug1(10,"gatePvData::eventEnumCB PV %s\n", name());
     dbr_time_enum* ts = (dbr_time_enum*)pArgs->dbr;
     aitIndex maxCount = totalElements();
 	gdd* value;
@@ -2067,12 +2094,13 @@ gdd* gatePvData::eventEnumCB(EVENT_ARGS * pArgs)
 		value = new gddScalar(GR->appValue,aitEnumEnum16);
 		value->putConvert(ts->value);
 	}
-#if DEBUG_ENUM
-	printf("gatePvData::eventEnumCB\n");
-	value->dump();
-#endif
 	value->setStatSevr(ts->status,ts->severity);
 	value->setTimeStamp(&ts->stamp);
+#if DEBUG_ENUM
+//    printf("gatePvData::eventEnumCB\n");
+    dumpdd(1, "gatePvData::eventEnumCB", name(), value);
+#endif
+    gateDebug3(12,"gatePvData::eventEnumCB PV %s secPastEpoch=%u, nsec=%u \n", name(), ts->stamp.secPastEpoch, ts->stamp.nsec);
 	return value;
 }
 
@@ -2285,8 +2313,8 @@ gdd* gatePvData::valueDataEnumCB(EVENT_ARGS * pArgs)
 		value->putConvert(ts->value);
 	}
 #if DEBUG_ENUM
-	printf("gatePvData::valueDataEnumCB\n");
-	value->dump();
+//    printf("gatePvData::valueDataEnumCB\n");
+    dumpdd(1, "gatePvData::valueDataEnumCB", name(), value);
 #endif
 	value->setStatSevr(ts->status,ts->severity);
 	return value;
@@ -2405,6 +2433,12 @@ gdd* gatePvData::valueDataDoubleCB(EVENT_ARGS * pArgs)
 		*value=ts->value;
 	}
 	value->setStatSevr(ts->status,ts->severity);
+
+#if DEBUG_GDD
+    // Note: This gdd value will have undefined timeStamp (0,0)
+    // as dbr_ctrl_double doesn't contain a timeStamp.
+    dumpdd(1, "gatePvData::valueDataDoubleCB", name(), value);
+#endif
 	return value;
 }
 
