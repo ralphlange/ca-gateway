@@ -52,6 +52,12 @@
   #else
     #define NO_OF_CPUS strtol(getenv("NUMBER_OF_PROCESSORS"),NULL,10)
   #endif
+  #ifndef _WIN32_WINNT
+    #define _WIN32_WINNT 0x0601
+  #endif
+  #if _WIN32_WINNT < 0x0601
+    #error Only windows 7 and above supported
+  #endif
 #else
   // Posix
   #define NO_OF_CPUS sysconf(_SC_NPROCESSORS_ONLN)
@@ -88,7 +94,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-
 
 #ifdef _WIN32
 #else
