@@ -94,11 +94,11 @@ jobs:
 #            set: "base-7.0"
 #            name: "B-7.0 MacOS clang-12"
 
-#          - os: windows-2019
-#            cmp: gcc
-#            configuration: default
-#            set: "base-7.0"
-#            name: "B-7.0 Win2019 MinGW"
+          - os: windows-2019
+            cmp: gcc
+            configuration: default
+            set: "base-7.0"
+            name: "B-7.0 Win2019 MinGW"
 
 #          - os: windows-2019
 #            cmp: gcc
@@ -106,11 +106,11 @@ jobs:
 #            set: "base-7.0"
 #            name: "B-7.0 Win2019 MinGW, static"
 
-#          - os: windows-2019
-#            cmp: vs2019
-#            configuration: default
-#            set: "base-7.0"
-#            name: "B-7.0 Win2019 MSC-19"
+          - os: windows-2019
+            cmp: vs2019
+            configuration: default
+            set: "base-7.0"
+            name: "B-7.0 Win2019 MSC-19"
 
 #          - os: windows-2019
 #            cmp: vs2019
