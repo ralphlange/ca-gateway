@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import gc
 import os
 import unittest
 import epics
@@ -53,7 +54,7 @@ class TestEnumUndefinedTimestamp(unittest.TestCase):
             print(	" IOC CA Context: ", epics.ca.current_context() )
 
     def testUndefTimestamp(self):
-        '''Two caget on an mbbi - both timestamps should be defined.'''
+        '''Two caget on an mbbi - both timestamps should be defined'''
         iocPV = epics.PV("ioc:HUGO:ENUM", auto_monitor=None)
         iocPV.add_callback(self.onChangeIOC)
 
@@ -84,9 +85,8 @@ class TestEnumUndefinedTimestamp(unittest.TestCase):
         epics.ca.initialize_libca()
         #epics.ca.create_context()
 
-        '''Two caget on an mbbi - both timestamps should be defined.'''
         # Now get the gateway value again and make sure the timestamp is not undefined
-        gwPV2  = epics.PV("gateway:HUGO:ENUM", auto_monitor=None)
+        gwPV2 = epics.PV("gateway:HUGO:ENUM", auto_monitor=None)
         gwPV2.add_callback(self.onChangeGW)
         gwEnumValue  = gwPV2.get()
         if gwtests.verbose:
