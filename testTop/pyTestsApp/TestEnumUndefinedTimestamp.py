@@ -28,6 +28,7 @@ class TestEnumUndefinedTimestamp(unittest.TestCase):
         self.gatewayControl.startGateway()
         os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
         os.environ["EPICS_CA_ADDR_LIST"] = "localhost:{0} localhost:{1}".format(gwtests.iocPort,gwtests.gwPort)
+        gc.collect()
         epics.ca.initialize_libca()
         self.eventsReceivedGW = 0
         self.eventsReceivedIOC = 0
@@ -79,6 +80,7 @@ class TestEnumUndefinedTimestamp(unittest.TestCase):
         gwPV1 = None 
         epics.ca.detach_context()
         epics.ca.finalize_libca()
+        gc.collect()
         epics.ca.initialize_libca()
         #epics.ca.create_context()
 
