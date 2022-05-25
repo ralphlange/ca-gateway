@@ -85,3 +85,58 @@ record(mbbi, "ioc:enumtest") {
   field(ONST, "one")
   field(TWST, "two")
 }
+
+record(compress, "ioc:fillingcompress") {
+  field(DESC, "Filling compress")
+  field(INP,  "ioc:auto CPP")
+  field(ALG,  "N to 1 Average")
+  field(N,    "10")
+  field(SCAN, "Passive")
+  field(NSAM, "20")
+}
+
+# Force processing via PROC field to fill from fillingcompress
+record(waveform, "ioc:fillingwaveform") {
+  field(DESC, "Filling waveform")
+  field(INP,  "ioc:fillingcompress NPP")
+  field(SCAN, "Passive")
+  field(NELM, "20")
+  field(FTVL, "DOUBLE")
+}
+
+# Force processing via PROC field to fill from fillingcompress
+record(aai, "ioc:fillingaai") {
+  field(DESC, "Filling aai")
+  field(INP,  "ioc:fillingwaveform NPP")
+  field(SCAN, "Passive")
+  field(NELM, "20")
+  field(FTVL, "DOUBLE")
+}
+
+record(aao, "ioc:fillingaao") {
+  field(DESC, "Filling aao")
+  field(SCAN, "Passive")
+  field(NELM, "20")
+  field(FTVL, "DOUBLE")
+  field(SIMM, "YES")
+  field(SIOL, "ioc:fillingwaveform NPP")
+}
+
+
+record(mbbo, "ioc:HUGO:ENUM")
+{
+  field(ZRST, "NO")
+  field(ZRVL, "0")
+  field(ONST, "YES")
+  field(ONVL, "1")
+  field(TWST, "MAYBE")
+  field(TWVL, "2")
+  field(VAL,  "2")
+  field(PINI, "YES")
+}
+record(ai, "ioc:HUGO:AI")
+{
+  field(VAL, "0.0")
+  field(PREC, 3)
+  field(PINI, "YES")
+}
