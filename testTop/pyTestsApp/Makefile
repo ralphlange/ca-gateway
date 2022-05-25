@@ -12,6 +12,7 @@ PYTESTS += TestDBELog.py
 PYTESTS += TestDBEProp.py
 PYTESTS += TestDBEValue.py
 PYTESTS += TestEnumPropertyCache.py
+PYTESTS += TestEnumUndefinedTimestamp.py
 PYTESTS += TestPropertyCache.py
 PYTESTS += TestStructures.py
 PYTESTS += TestWaveformWithCAMaxArrayBytes.py
