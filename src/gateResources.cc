@@ -23,12 +23,18 @@
 #include <time.h>
 
 #ifdef _WIN32
-/* WIN32 does not have unistd.h and does not define the following constants */
-# define F_OK 00
-# define W_OK 02
-# define R_OK 04
-# include <direct.h>     /* for getcwd (usually in sys/parm.h or unistd.h) */
-# include <io.h>         /* for access, chmod  (usually in unistd.h) */
+  #include <direct.h>     /* for getcwd (usually in sys/parm.h or unistd.h) */
+  #include <io.h>         /* for access, chmod  (usually in unistd.h) */
+  /* Windows does not have unistd.h and older versions may not define the following constants */
+  #ifndef F_OK
+    #define F_OK 00
+  #endif
+  #ifndef W_OK
+    #define W_OK 02
+  #endif
+  #ifndef R_OK
+    #define R_OK 04
+  #endif
 #else
 # include <unistd.h>
 # include <sys/utsname.h>
