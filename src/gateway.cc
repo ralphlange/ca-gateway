@@ -1389,8 +1389,8 @@ static void print_instructions(void)
 	pr(stderr,"-home directory: Home directory where all your gateway\n");
 	pr(stderr," configuration files are kept where log and command files go.\n\n");
 
-	pr(stderr,"-sip IP_address: IP address that gateway's CA server listens\n");
-	pr(stderr," for PV requests.  Sets env variable EPICS_CAS_INTF_ADDR.\n\n");
+	pr(stderr,"-sip IP_address_list: IP address list that gateway's CA server listens\n");
+	pr(stderr," for PV requests.  Sets env variable EPICS_CAS_INTF_ADDR_LIST.\n\n");
 
 	pr(stderr,"-signore IP_address_list: IP address that gateway's CA server\n");
 	pr(stderr," ignores.  Sets env variable EPICS_CAS_IGNORE_ADDR_LIST.\n\n");
