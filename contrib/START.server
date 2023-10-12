@@ -11,7 +11,7 @@
 # export EPICS_CA_ADDR_LIST=164.54.189.255
 
 # Other important variables to remember (gateway sets these)
-# export EPICS_CAS_INTF_ADDR= - IP address where server listens
+# export EPICS_CAS_INTF_ADDR_LIST= - IP address list where server listens
 # export EPICS_CAS_SERVER_PORT= - port that the CA server uses
 # export EPICS_CA_SERVER_PORT= - port that the CA client library uses
 
