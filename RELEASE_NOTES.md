@@ -4,7 +4,7 @@ CA Gateway Release Notes
 ## 2.1.4 (not released yet)
 [View diff](https://github.com/epics-extensions/ca-gateway/compare/R2-1-3-0...master)
 
-* Ehhh...
+* Ensure that ASL defaults to 1
 
 ## 2.1.3 (15 Dec 2021)
 [View diff](https://github.com/epics-extensions/ca-gateway/compare/R2-1-2-0...R2-1-3-0)
