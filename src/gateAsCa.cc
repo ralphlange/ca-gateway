@@ -19,6 +19,24 @@
 #include "alarm.h"
 #include "cadef.h"
 #include "epicsPrint.h"
+#include "epicsVersion.h"
+#ifdef VERSION_INT
+#include "epicsAtomic.h"
+#else
+// Have no epicsAtomic.h
+#if __GCC_HAVE_SYNC_COMPARE_AND_SWAP_4
+#define epicsAtomicSetIntT(pv,x) ({ (*(pv))=(x); __sync_synchronize (); })
+#define epicsAtomicGetIntT(pv) ({ __sync_synchronize (); (*(pv)); })
+#define epicsAtomicIncrIntT(pv) __sync_add_and_fetch((pv),1)
+#define epicsAtomicDecrIntT(pv) __sync_sub_and_fetch((pv),1)
+#else
+// Hope for the best
+#define epicsAtomicSetIntT(pv,x) (*(pv))=(x)
+#define epicsAtomicGetIntT(pv) (*(pv))
+#define epicsAtomicIncrIntT(pv) (++*(pv))
+#define epicsAtomicDecrIntT(pv) (--*(pv))
+#endif
+#endif
 
 epicsShareExtern volatile ASBASE *pasbase;
 
@@ -31,7 +49,7 @@ typedef struct _capvt {
 } CAPVT;
 
 static volatile int ready = 0;
-static volatile int count = 0;
+static int count = 0;
 static time_t start_time;
 
 extern "C" {
@@ -77,15 +95,15 @@ static void eventCB(struct event_handler_args arg)
 #endif
 	if (!ready && !pcapvt->gotFirstEvent)
 	{
-		--count;
+		epicsAtomicDecrIntT(&count);
 #if DEBUG_DELAY
-		printf("  !ready && !pcapvt->gotFirstEvent count=%d\n",count);
+		printf("  !ready && !pcapvt->gotFirstEvent count=%d\n", epicsAtomicGetIntT(&count));
 #endif
 		pcapvt->gotFirstEvent=TRUE;
 	}
 	if(ca_state(chid)!=cs_conn || !ca_read_access(chid)) {
 #if DEBUG_DELAY
-		printf("  ca_state(chid)!=cs_conn || !ca_read_access(chid) count=%d\n",count);
+		printf("  ca_state(chid)!=cs_conn || !ca_read_access(chid) count=%d\n", epicsAtomicGetIntT(&count));
 #endif
 		if(!(pasg->inpBad & (1<<pasginp->inpIndex))) {
 			// was good so lets make it bad
@@ -95,12 +113,12 @@ static void eventCB(struct event_handler_args arg)
 	} else {
 		if(caStatus!=ECA_NORMAL) {
 #if DEBUG_DELAY
-			printf("  caStatus!=ECA_NORMAL count=%d\n",count);
+			printf("  caStatus!=ECA_NORMAL count=%d\n", epicsAtomicGetIntT(&count));
 #endif
 			epicsPrintf("asCa: eventCallback error %s\n",ca_message(caStatus));
 		} else {
 #if DEBUG_DELAY
-		printf("  caStatus == ECA_NORMAL count=%d\n",count);
+		printf("  caStatus == ECA_NORMAL count=%d\n", epicsAtomicGetIntT(&count));
 #endif
 			pcapvt->rtndata = *pdata; // structure copy
 			if(pdata->severity==INVALID_ALARM) {
@@ -126,7 +144,7 @@ void gateAsCa(void)
 	time_t	cur_time;
 
 	ready=0;
-	count=0;
+	epicsAtomicSetIntT(&count,0);
 	time(&start_time);
 
 	// CA must be initialized by this time - hackery
@@ -144,7 +162,7 @@ void gateAsCa(void)
 			pasg->inpBad |= (1<<pasginp->inpIndex);
 			pasginp->capvt=(CAPVT*)asCalloc(1,sizeof(CAPVT));
 			pcapvt=(CAPVT*)pasginp->capvt;
-			++count;
+			epicsAtomicIncrIntT(&count);
 			gateDebug1(11,"Access security searching for %s\n",pasginp->inp);
 
 			// Note calls gateAsCB immediately called for local Pvs
@@ -169,7 +187,7 @@ void gateAsCa(void)
 	}
 	time(&cur_time);
 
-	while(count>0 && (cur_time-start_time)<4)
+	while(epicsAtomicGetIntT(&count)>0 && (cur_time-start_time)<4)
 	{
 		ca_pend_event(1.0);
 		time(&cur_time);
