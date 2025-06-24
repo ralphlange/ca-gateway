@@ -454,8 +454,8 @@ int gateAs::readPvList(const char* lfile)
 
 #ifdef USE_DENYFROM
 		//All deny from rules with host names will be conveted to ip addresses
-		strncpy(tempInbuf,inbuf,strlen(inbuf));
-		tempInbuf[strlen(inbuf)-1]='\0';
+		strncpy(tempInbuf,inbuf,sizeof(tempInbuf)-1);
+		tempInbuf[sizeof(tempInbuf)-1]='\0';
 
 		if((ptr=strchr(inbuf,'#'))) *ptr='\0'; // Take care of comments
 
@@ -494,7 +494,7 @@ int gateAs::readPvList(const char* lfile)
 						ch=strchr(hostname,':');
 						if(ch != NULL) hostname[ch-hostname]=0;
 
-						strncpy(pIPInput,hostname,strlen(hostname));
+						strncpy(pIPInput,hostname,sizeof(inbufWithIPs)-1-(inbufWithIPs-pIPInput));
 						*(pIPInput+strlen(hostname)) = ' ';
 						pIPInput = pIPInput + strlen(hostname) + 1;
 					}
@@ -509,20 +509,20 @@ int gateAs::readPvList(const char* lfile)
 
 			}else
 			{
-				strncpy(inbufWithIPs,tempInbuf,strlen(tempInbuf));
-				inbufWithIPs[strlen(tempInbuf)]='\0';
+				strncpy(inbufWithIPs,tempInbuf,sizeof(inbufWithIPs)-1);
+				inbufWithIPs[sizeof(inbufWithIPs)-1]='\0';
 			}
 
 		}else
 		{
-			strncpy(inbufWithIPs,tempInbuf,strlen(tempInbuf));
-			inbufWithIPs[strlen(tempInbuf)]='\0';
+			strncpy(inbufWithIPs,tempInbuf,sizeof(inbufWithIPs)-1);
+			inbufWithIPs[sizeof(inbufWithIPs)-1]='\0';
 		}
 
-		pl=new gateAsLine(inbufWithIPs,strlen(inbufWithIPs),line_list);
+		pl=new gateAsLine(inbufWithIPs,line_list);
 #else
 		if((ptr=strchr(inbuf,'#'))) *ptr='\0'; // Take care of comments
-		pl=new gateAsLine(inbuf,strlen(inbuf),line_list);
+		pl=new gateAsLine(inbuf,line_list);
 #endif
 		if(!(pattern=strtok(pl->buf," \t\n"))) continue;
 
