@@ -45,12 +45,14 @@ clean::
 endif
 
 runtests:
-	nosetests $(PYTESTS:%=../%)
+#	nosetests $(PYTESTS:%=../%)
+	nose2 -v --pretty-assert --start-dir .. --config ../nose2.cfg
 
 $(TAPFILES): .runtests.tap ;
 .INTERMEDIATE: .runtests.tap
 .runtests.tap:
-	nosetests --with-tap $(PYTESTS:%=../%)
+#	nosetests --with-tap $(PYTESTS:%=../%)
+	nose2 -v --pretty-assert --start-dir .. --config ../nose2.cfg
 
 # Workaround for 3.14 make rules: special target to avoid circular dependencies
 build runtests tapfiles: testfiles pvlist.txt
