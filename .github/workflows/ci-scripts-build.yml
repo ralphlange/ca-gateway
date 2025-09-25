@@ -34,6 +34,8 @@ jobs:
       EXTRA: ${{ matrix.extra }}
       TEST: ${{ matrix.test }}
       SET: ${{ matrix.set }}
+      JUNIT_PREFIX: ${{ matrix.name }}_${{ matrix.os }}_
+      SKIP_CAPUTLOG_TESTS: ${{ matrix.skip_caputlog }}
 
     strategy:
       fail-fast: false
@@ -124,12 +126,36 @@ jobs:
     - name: "apt-get install"
       run: |
         sudo apt-get update
-        sudo apt-get -y install qemu-system-x86 g++-mingw-w64-x86-64 gdb python3-all-dbg
-        sudo pip install pyepics nose2
+        sudo apt-get -y install qemu-system-x86 g++-mingw-w64-x86-64 gdb
       if: runner.os == 'Linux'
+    - name: Install Python test dependencies with pip
+      run: |
+        pip install --break-system-packages pytest pytest-tap pyepics caproto
+      if: matrix.os == 'ubuntu-24.04'
+    - name: Install Python test dependencies with pip
+      run: |
+        pip install pytest pytest-tap pyepics caproto
+      if: matrix.os == 'ubuntu-22.04'
     - name: Prepare and compile dependencies
       run: python .ci/cue.py prepare
     - name: Build main module
       run: python .ci/cue.py build
     - name: Run main module tests
       run: python .ci/cue.py test
+    - name: Collect and show test results
+      run: python .ci/cue.py test-results
+    - name: Generate test summary
+      uses: test-summary/action@v2
+      with:
+        paths: |
+          testTop/pyTestsApp/O.*/*.xml
+      if: always()
+    - name: Upload test artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.name }} - test results
+        path: |
+          testTop/pyTestsApp/O.*/*.tap
+          testTop/pyTestsApp/O.*/*.xml
+          test-summary.md
+      if: always()
