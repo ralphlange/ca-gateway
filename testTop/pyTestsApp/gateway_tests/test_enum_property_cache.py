@@ -11,7 +11,6 @@ aka https://github.com/epics-extensions/ca-gateway/issues/58
 
 import logging
 import time
-import gc
 
 import pytest
 from epics import ca, dbr
