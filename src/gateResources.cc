@@ -266,6 +266,7 @@ gateResources::gateResources(void)
 	putlog_file=NULL;
 #ifdef WITH_CAPUTLOG
     caputlog_address=NULL;
+    caputlog_json=false;
 #endif
 	putlogFp=NULL;
 	report_file=strDup(GATE_REPORT_FILE);
@@ -358,7 +359,12 @@ int gateResources::setCaPutlogAddress(const char* address)
 int gateResources::caPutLog_Init(void)
 {
   if (caputlog_address) {
-    return caPutLogINIT(caputlog_address, caPutLogAll);
+    if (caputlog_json) {
+      CaPutJsonLogTask *logger =  CaPutJsonLogTask::getInstance();
+      if (logger != NULL) return logger->initialize(caputlog_address, caPutJsonLogAll, 0.0);
+    } else {
+      return caPutLogINIT(caputlog_address, caPutLogAll);
+    }
   }
   return 1;
 }
@@ -397,7 +403,12 @@ void gateResources::caPutLog_Send
     // as there's no way to flag a VALUE struct as invalid
     memcpy(&pdata->old_value,&pdata->new_value.value,sizeof(VALUE));
   }
-  caPutLogTaskSend(pdata);
+  if (caputlog_json) {
+    CaPutJsonLogTask *instance = CaPutJsonLogTask::getInstance();
+    instance->addPutToQueue(pdata);
+  } else {
+    caPutLogTaskSend(pdata);
+  }
 }
 
 void gateResources::putLog(
