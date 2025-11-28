@@ -18,7 +18,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <ctype.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -40,7 +39,6 @@
 # include <sys/utsname.h>
 #endif
 
-#include "cadef.h"
 #include "epicsStdio.h"
 
 #include "gateResources.h"
@@ -54,6 +52,12 @@
   #include <caPutLog.h>
   #include <caPutLogTask.h>
   #include <caPutLogAs.h>
+  #include <caPutJsonLogTask.h>
+  #ifdef HAS_caPutLogInit_arg3timeout
+    #define caPutLogINIT(arg1,arg2) caPutLogInit(arg1, arg2, 0.0)
+  #else
+    #define caPutLogINIT(arg1,arg2) caPutLogInit(arg1, arg2)
+  #endif
 #endif
 
 // Global variables
@@ -258,8 +262,6 @@ gateResources::gateResources(void)
     else
       command_file=NULL;
 
-
-
 	// Miscellaneous initializations
 	putlog_file=NULL;
 #ifdef WITH_CAPUTLOG
@@ -356,7 +358,7 @@ int gateResources::setCaPutlogAddress(const char* address)
 int gateResources::caPutLog_Init(void)
 {
   if (caputlog_address) {
-    return caPutLogInit(caputlog_address,caPutLogAll);
+    return caPutLogINIT(caputlog_address, caPutLogAll);
   }
   return 1;
 }
