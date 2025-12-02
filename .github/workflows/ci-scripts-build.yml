@@ -49,30 +49,30 @@ jobs:
             set: "base-7.0"
             name: "B-7.0 Ub-24 gcc-13 C++11, static"
 
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             cmp: gcc
             configuration: default
             set: "base-7.0"
-            name: "B-7.0 Ub-22 gcc-11"
+            name: "B-7.0 Ub-24 gcc-13"
 
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             cmp: gcc
             configuration: static
             set: "base-7.0"
-            name: "B-7.0 Ub-22 gcc-11, static"
+            name: "B-7.0 Ub-24 gcc-13, static"
 
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             cmp: clang
             configuration: default
             set: "base-7.0"
-            name: "B-7.0 Ub-22 clang-11"
+            name: "B-7.0 Ub-24 clang-18"
 
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             cmp: clang
             configuration: default
             extra: "CMD_CXXFLAGS=-std=c++11"
             set: "base-7.0"
-            name: "B-7.0 Ub-22 clang-11 C++11"
+            name: "B-7.0 Ub-24 clang-18 C++11"
 
 # MacOS and Windows builds need regex library
 #          - os: macos-latest
@@ -93,29 +93,29 @@ jobs:
 #            set: "base-7.0"
 #            name: "B-7.0 Win-22 MSC-22, debug"
 
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             cmp: gcc
             configuration: default
             set: "base-3.15"
-            name: "B-3.15 Ub-22 gcc-11"
+            name: "B-3.15 Ub-24 gcc-13"
 
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             cmp: gcc
             configuration: static
             set: "base-3.15"
-            name: "B-3.15 Ub-22 gcc-11, static"
+            name: "B-3.15 Ub-24 gcc-13, static"
 
-          - os: ubuntu-22.04
+          - name: "B-3.14 Ub-24 gcc-13"
+            os: ubuntu-24.04
             cmp: gcc
             configuration: default
             set: "base-3.14"
-            name: "B-3.14 Ub-22 gcc-11"
 
-          - os: ubuntu-22.04
+          - name: "B-3.14 Ub-24 gcc-13, static"
+            os: ubuntu-24.04
             cmp: gcc
             configuration: static
             set: "base-3.14"
-            name: "B-3.14 Ub-22 gcc-11, static"
 
     steps:
     - uses: actions/checkout@v4
