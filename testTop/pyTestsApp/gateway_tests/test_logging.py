@@ -12,7 +12,7 @@ from typing import Any, Generator, List, Optional, Union
 
 import pytest
 
-from . import config, conftest
+from . import conftest
 
 logger = logging.getLogger(__name__)
 
