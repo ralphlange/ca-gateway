@@ -65,13 +65,11 @@ def run_process(
     )
 
     stdout = None
-    startup_stdout = None
     event = threading.Event()
     assert proc.stdin is not None
 
     def read_stdout():
         """Read standard output in a background thread."""
-        nonlocal startup_stdout
         nonlocal stdout
         lines = []
         startup_lines = []
