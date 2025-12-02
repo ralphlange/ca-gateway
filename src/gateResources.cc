@@ -52,7 +52,9 @@
   #include <caPutLog.h>
   #include <caPutLogTask.h>
   #include <caPutLogAs.h>
-  #include <caPutJsonLogTask.h>
+  #if EPICS_VERSION >= 7
+    #include <caPutJsonLogTask.h>
+  #endif
   #ifdef HAS_caPutLogInit_arg3timeout
     #define caPutLogINIT(arg1,arg2) caPutLogInit(arg1, arg2, 0.0)
   #else
