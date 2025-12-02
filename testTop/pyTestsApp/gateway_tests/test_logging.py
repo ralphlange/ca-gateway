@@ -8,7 +8,7 @@ import os
 import socket
 import tempfile
 import threading
-from typing import Any, Generator, List, Optional, Union
+from typing import Any, Generator, List, Optional, Union, Tuple
 
 import pytest
 
@@ -18,15 +18,17 @@ logger = logging.getLogger(__name__)
 
 
 @contextlib.contextmanager
-def listen_on_port(port: int, encoding="latin-1") -> Generator[List[str], None, None]:
-    """Listen on TCP port `port` for caPutLog data."""
+def listen_on_sock(sock: socket.socket, encoding="latin-1") -> Generator[List[str], None, None]:
+    """Listen on TCP socket for caPutLog data."""
     data = []
 
     def listen():
         sock.listen(1)
         client, addr = sock.accept()
         try:
-            logger.warning("Accepted client on localhost:%d - %s", port, addr)
+            logger.warning("Accepted client on localhost:%d - %s",
+                           sock.getsockname()[1],
+                           addr)
             while True:
                 read = client.recv(4096)
                 logger.info("caPutLog TCP server received %s", read)
@@ -36,15 +38,20 @@ def listen_on_port(port: int, encoding="latin-1") -> Generator[List[str], None, 
         finally:
             client.close()
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # Avoid "address already in use" between successive caputlog tests
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", port))
     threading.Thread(target=listen, daemon=True).start()
     try:
         yield data
     finally:
         sock.close()
+
+
+def create_socket(addr: str) -> Tuple[socket.socket, int]:
+    """Create a TCP socket on the specified address using a system-chosen port."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Try to avoid "address already in use" between successive caputlog tests
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((addr, 0))
+    return sock, sock.getsockname()[1]
 
 
 @dataclasses.dataclass
@@ -152,9 +159,10 @@ def test_caputlog(
     """
     Test that caPutLog works by putting to a PV and checking the output.
     """
+    sock, putlog_port = create_socket("127.0.0.1")
     with (
         tempfile.NamedTemporaryFile() as caputlog_fp,
-        listen_on_port(config.default_putlog_port) as tcp_data,
+        listen_on_sock(sock) as tcp_data,
     ):
         with (
             conftest.custom_environment(
@@ -164,7 +172,7 @@ def test_caputlog(
                     "-putlog",
                     caputlog_fp.name,
                     "-caputlog",
-                    f"127.0.0.1:{config.default_putlog_port}",
+                    f"127.0.0.1:{putlog_port}",
                 ],
             ) as env,
             conftest.gateway_channel_access_env(),
