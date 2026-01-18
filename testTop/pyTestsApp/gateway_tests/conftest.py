@@ -111,7 +111,8 @@ def run_process(
                     textwrap.indent(str(stdout), "    "),
                 )
 
-    threading.Thread(daemon=True, target=read_stdout).start()
+    slurp = threading.Thread(daemon=True, target=read_stdout)
+    slurp.start()
 
     # Wait for the "ready" message event, up to ``startup_time`` seconds
     event.wait(startup_time)
@@ -126,7 +127,7 @@ def run_process(
             proc.terminate()
         proc.wait()
         logger.info("Process %s exited", cmd[0])
-
+        slurp.join()
 
 @contextlib.contextmanager
 def run_ioc(
