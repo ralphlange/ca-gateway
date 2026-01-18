@@ -956,7 +956,7 @@ def pyepics_caget_pair(
 def pyepics_caput(
     pvname: str,
     value: Any,
-    timeout: float = 0.5,
+    timeout: float = 5.0,
 ) -> None:
     """
     Use low-level pyepics.ca to put data to a PV.
