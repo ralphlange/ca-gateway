@@ -48,7 +48,10 @@ def test_alarm_level(standard_env: conftest.EnvironmentInfo):
         while events_received < 6:
             assert cond.wait(timeout=10.0)
     assert events_received == 6
-    time.sleep(0.1)
+
+    # no more events expected
+    with cond:
+        assert not cond.wait(timeout=1.0)
     # Any updates with unchanged severity are an error
     assert (
         severity_unchanged == 0

@@ -37,4 +37,7 @@ def test_value_no_deadband(standard_env: conftest.EnvironmentInfo):
         while events_received < 11:
             assert cond.wait(timeout=10.0)
     assert events_received == 11
-    time.sleep(0.1)
+
+    # no more events expected
+    with cond:
+        assert not cond.wait(timeout=1.0)

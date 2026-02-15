@@ -115,12 +115,16 @@ def test_prop_cache_value_monitor_ctrl_get(
     assert (
         egu_val == gw_expected
     ), f"Expected GW units string: {gw_expected}; actual units string: {egu_val}"
-    time.sleep(0.1)
+
+    # quiescence
+    with cond:
+        assert not cond.wait(timeout=1.0)
 
 
 def test_prop_cache_value_get_ctrl_get(
     prop_supported: bool, standard_env: conftest.EnvironmentInfo
 ):
+    cond = threading.Condition()
     """
     Get PV (value) through GW - change properties (HIGH, EGU) directly -
     get the DBR_CTRL of the PV through GW
@@ -205,12 +209,16 @@ def test_prop_cache_value_get_ctrl_get(
     assert (
         egu_val == gw_expected
     ), f"Expected GW units string: {gw_expected}; actual units string: {egu_val}"
-    time.sleep(0.1)
+
+    # quiescence
+    with cond:
+        assert not cond.wait(timeout=1.0)
 
 
 def test_prop_cache_value_get_disconnect_ctrl_get(
     standard_env: conftest.EnvironmentInfo,
 ):
+    cond = threading.Condition()
     """
     Get PV (value) through GW - disconnect client - change properties
     (HIGH, EGU) directly - get the DBR_CTRL of the PV through GW
@@ -315,4 +323,7 @@ def test_prop_cache_value_get_disconnect_ctrl_get(
     assert egu_val == "foo", (
         "Expected GW units string: wobbles; actual units string: " + egu_val
     )
-    time.sleep(0.1)
+
+    # quiescence
+    with cond:
+        assert not cond.wait(timeout=1.0)

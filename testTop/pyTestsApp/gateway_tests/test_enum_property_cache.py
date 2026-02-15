@@ -93,7 +93,10 @@ def test_enum_prop_cache_value_monitor_ctrl_get(
     assert (
         oneStr == gw_expected
     ), f"Expected GW enum[1]: {gw_expected}; actual enum[1]: {oneStr}"
-    time.sleep(0.1)
+
+    # quiescence
+    with cond:
+        assert not cond.wait(timeout=1.0)
 
 
 @pytest.mark.xfail(reason="Unfixed bug #58")
@@ -128,6 +131,7 @@ def test_enum_prop_cache_value_get_ctrl_get(
     assert gateway_stats.active == 1
     assert gateway_stats.inactive == 0
 
+    cond = threading.Condition()
     # enum string should not have been updated
     ioc_ctrl = ca.get_ctrlvars(ioc)
     oneStr = ioc_ctrl["enum_strs"][1]
@@ -155,7 +159,10 @@ def test_enum_prop_cache_value_get_ctrl_get(
     assert (
         oneStr == gw_expected
     ), f"Expected GW enum[1]: {gw_expected}; actual enum[1]: {oneStr}"
-    time.sleep(0.1)
+
+    # quiescence
+    with cond:
+        assert not cond.wait(timeout=1.0)
 
 
 def test_enum_prop_cache_value_get_disconnect_ctrl_get(
@@ -189,6 +196,7 @@ def test_enum_prop_cache_value_get_disconnect_ctrl_get(
     assert gateway_stats.active == 1
     assert gateway_stats.inactive == 0
 
+    cond = threading.Condition()
     # enum string should not have been updated
     ioc_ctrl = ca.get_ctrlvars(ioc)
     oneStr = ioc_ctrl["enum_strs"][1]
@@ -237,4 +245,7 @@ def test_enum_prop_cache_value_get_disconnect_ctrl_get(
     gw_ctrl = ca.get_ctrlvars(gw)
     oneStr = gw_ctrl["enum_strs"][1]
     assert oneStr == "uno", "Expected GW enum[1]: uno; actual enum[1]: " + oneStr
-    time.sleep(0.1)
+
+    # quiescence
+    with cond:
+        assert not cond.wait(timeout=1.0)
