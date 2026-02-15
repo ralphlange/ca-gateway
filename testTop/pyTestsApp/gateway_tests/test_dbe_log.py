@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 import logging
-import time
+import threading
 
 import epics
 
@@ -20,17 +20,20 @@ def test_log_deadband(standard_env: conftest.EnvironmentInfo):
     events_received = 0
     diff_inside_deadband = 0
     last_value = -99.9
+    cond = threading.Condition()
 
     def on_change(pvname=None, **kws):
         nonlocal events_received
         nonlocal last_value
         nonlocal diff_inside_deadband
 
-        events_received += 1
-        logger.debug("%s changed to %s (%s)", pvname, kws["value"], kws["severity"])
-        if (kws["value"] != 0.0) and (abs(last_value - kws["value"]) <= 10.0):
-            diff_inside_deadband += 1
-        last_value = kws["value"]
+        with cond:
+            events_received += 1
+            logger.debug("%s changed to %s (%s)", pvname, kws["value"], kws["severity"])
+            if (kws["value"] != 0.0) and (abs(last_value - kws["value"]) <= 10.0):
+                diff_inside_deadband += 1
+            last_value = kws["value"]
+            cond.notify()
 
     # gateway:passiveADEL has ADEL=10
     ioc, gw = conftest.get_pv_pair(
@@ -40,12 +43,18 @@ def test_log_deadband(standard_env: conftest.EnvironmentInfo):
     gw.get()
     for val in range(35):
         ioc.put(val, wait=True)
-    time.sleep(0.1)
 
     # We get 5 events: at connection, first put, then at 11 22 33
+    with cond:
+        while events_received < 5:
+            assert cond.wait(timeout=10.0)
     assert (
         events_received == 5
     ), f"events expected: 5; events received: {events_received}"
+
+    # no more events expected
+    with cond:
+        assert not cond.wait(timeout=1.0)
 
     # Any updates inside deadband are an error
     assert (

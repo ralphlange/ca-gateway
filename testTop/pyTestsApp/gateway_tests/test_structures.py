@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import logging
 import os
-import time
+import threading
 
 import pytest
 from epics import ca, dbr
@@ -29,12 +29,15 @@ def test_ctrl_struct_value_monitor(standard_env: conftest.EnvironmentInfo):
     events_received_gw = 0
     ioc_struct = {}
     gw_struct = {}
+    cond = threading.Condition()
 
     def on_change_ioc(pvname=None, **kws):
         nonlocal events_received_ioc
         nonlocal ioc_struct
-        events_received_ioc += 1
-        ioc_struct = kws
+        with cond:
+            events_received_ioc += 1
+            ioc_struct = kws
+            cond.notify()
         logger.info(
             "New IOC Value for %s value=%s, kw=%s\n",
             pvname,
@@ -45,8 +48,10 @@ def test_ctrl_struct_value_monitor(standard_env: conftest.EnvironmentInfo):
     def on_change_gw(pvname=None, **kws):
         nonlocal gw_struct
         nonlocal events_received_gw
-        events_received_gw += 1
-        gw_struct = kws
+        with cond:
+            events_received_gw += 1
+            gw_struct = kws
+            cond.notify()
         logger.info(
             "New GW Value for %s value=%s, kw=%s\n",
             pvname,
@@ -72,7 +77,12 @@ def test_ctrl_struct_value_monitor(standard_env: conftest.EnvironmentInfo):
     # set value on IOC
     ioc_value = ca.create_channel("ioc:gwcachetest")
     ca.put(ioc_value, 10.0, wait=True)
-    time.sleep(0.1)
+
+    # wait for initial update, and one value update
+    # gw_struct['value']==10 and ioc_struct['value']==10
+    with cond:
+        while events_received_ioc < 2 or events_received_gw < 2:
+            assert cond.wait(timeout=10.0)
 
     assert events_received_ioc == events_received_gw, (
         f"After setting value, no. of received updates differ: "
@@ -89,7 +99,11 @@ def test_ctrl_struct_value_monitor(standard_env: conftest.EnvironmentInfo):
     ioc_hihi = ca.create_channel("ioc:gwcachetest.HIHI")
     ca.put(ioc_hihi, 123.0, wait=True)
     ca.put(ioc_value, 11.0, wait=True)  # trigger update
-    time.sleep(0.1)
+
+    # wait for one more event
+    with cond:
+        while events_received_ioc < 3 or events_received_gw < 3:
+            assert cond.wait(timeout=10.0)
 
     assert events_received_ioc == events_received_gw, (
         f"After setting property, no. of received updates differ: "
@@ -101,3 +115,7 @@ def test_ctrl_struct_value_monitor(standard_env: conftest.EnvironmentInfo):
         f"At update {events_received_ioc} (change property), received structure "
         f"updates differ:\n\t{differences}"
     )
+
+    # no more events expected
+    with cond:
+        assert not cond.wait(timeout=1.0)
