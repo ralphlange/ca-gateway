@@ -6,6 +6,7 @@ Set up a connection through the Gateway - change a property externally - check
 if Gateway cache was updated
 """
 import logging
+import threading
 import time
 
 from epics import ca, dbr
@@ -22,9 +23,11 @@ def test_prop_cache_value_monitor_ctrl_get(
     Monitor PV (value events) through GW - change properties (HIGH, EGU)
     directly - get the DBR_CTRL of the PV through GW
     """
+    cond = threading.Condition()
 
     def on_change(pvname=None, **kws):
-        ...
+        with cond:
+            cond.notify()
 
     # gateway should show no VC (client side connection) and no PV (IOC side connection)
     gateway_stats = conftest.GatewayStats()
@@ -71,7 +74,8 @@ def test_prop_cache_value_monitor_ctrl_get(
     # set warning limit on IOC
     ioc_high = ca.create_channel("ioc:gwcachetest.HIGH")
     ca.put(ioc_high, 20.0, wait=True)
-    time.sleep(0.1)
+    with cond:
+        cond.wait(timeout=0.2)
 
     # Now the limit should have been updated (if IOC supports DBE_PROPERTY)
     ioc_ctrl = ca.get_ctrlvars(ioc)
@@ -93,7 +97,8 @@ def test_prop_cache_value_monitor_ctrl_get(
     ioc_egu = ca.create_channel("ioc:gwcachetest.EGU")
     old_egu = ca.get(ioc_egu)
     ca.put(ioc_egu, "foo", wait=True)
-    time.sleep(0.1)
+    with cond:
+        cond.wait(timeout=0.2)
 
     # Now the unit string should have been updated (if IOC supports DBE_PROPERTY)
     ioc_ctrl = ca.get_ctrlvars(ioc)
@@ -158,6 +163,7 @@ def test_prop_cache_value_get_ctrl_get(
     # set warning limit on IOC
     ioc_high = ca.create_channel("ioc:gwcachetest.HIGH")
     ca.put(ioc_high, 20.0, wait=True)
+    # No monitor here, so we must sleep
     time.sleep(0.1)
 
     # Now the limit should have been updated (if IOC supports DBE_PROPERTY)
@@ -180,6 +186,7 @@ def test_prop_cache_value_get_ctrl_get(
     ioc_egu = ca.create_channel("ioc:gwcachetest.EGU")
     old_egu = ca.get(ioc_egu)
     ca.put(ioc_egu, "foo", wait=True)
+    # No monitor here, so we must sleep
     time.sleep(0.1)
 
     # Now the unit string should have been updated (if IOC supports DBE_PROPERTY)
@@ -268,6 +275,7 @@ def test_prop_cache_value_get_disconnect_ctrl_get(
     # set unit string on IOC
     ioc_egu = ca.create_channel("ioc:gwcachetest.EGU")
     ca.put(ioc_egu, "foo", wait=True)
+    # No monitor here, so we must sleep
     time.sleep(0.1)
 
     # reconnect Gateway and IOC

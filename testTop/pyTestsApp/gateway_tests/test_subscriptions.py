@@ -2,6 +2,7 @@ import copy
 import functools
 import logging
 import math
+import threading
 import time
 from typing import Any, List
 
@@ -81,9 +82,12 @@ def test_subscription_on_connection(
     """
     gateway_events = []
     ioc_events = []
+    cond = threading.Condition()
 
     def on_change(event_list, pvname=None, chid=None, **kwargs):
-        event_list.append(copy.deepcopy(kwargs))
+        with cond:
+            event_list.append(copy.deepcopy(kwargs))
+            cond.notify()
 
     with conftest.ca_subscription_pair(
         pvname,
@@ -92,7 +96,11 @@ def test_subscription_on_connection(
         form=form,
         mask=mask,
     ):
-        time.sleep(0.1)
+        with cond:
+            while not ioc_events or not gateway_events:
+                assert cond.wait(timeout=10.0)
+            # Give it a little more time to make sure all initial events are in
+            cond.wait(timeout=0.1)
 
     compare_subscription_events(
         gateway_events,
@@ -280,9 +288,12 @@ def test_subscription_with_put(
     """
     gateway_events = []
     ioc_events = []
+    cond = threading.Condition()
 
     def on_change(event_list, pvname=None, chid=None, **kwargs):
-        event_list.append(kwargs)
+        with cond:
+            event_list.append(kwargs)
+            cond.notify()
 
     with conftest.ca_subscription_pair(
         pvname,
@@ -292,14 +303,26 @@ def test_subscription_with_put(
         mask=mask,
     ) as (ioc_ch, gateway_ch):
         # Time for initial monitor event
-        time.sleep(0.2)
+        with cond:
+            while not ioc_events or not gateway_events:
+                assert cond.wait(timeout=10.0)
+            # Give it a little more time to make sure all initial events are in
+            cond.wait(timeout=0.1)
+
         # Throw away initial events; we care what happens from now on
-        del gateway_events[:]
-        del ioc_events[:]
-        for value in values:
+        with cond:
+            del gateway_events[:]
+            del ioc_events[:]
+
+        for i, value in enumerate(values):
             ca.put(ioc_ch, value)
-            time.sleep(0.3)
-        time.sleep(0.3)
+            with cond:
+                while len(ioc_events) < i + 1 or len(gateway_events) < i + 1:
+                    assert cond.wait(timeout=10.0)
+
+        # Wait a little longer to make sure no more events are coming
+        with cond:
+            cond.wait(timeout=0.2)
 
     compare_subscription_events(
         gateway_events,

@@ -10,6 +10,7 @@ aka https://github.com/epics-extensions/ca-gateway/issues/58
 """
 
 import logging
+import threading
 import time
 
 import pytest
@@ -37,8 +38,11 @@ def test_enum_prop_cache_value_monitor_ctrl_get(
     assert gateway_stats.active == 0
     assert gateway_stats.inactive == 0
 
+    cond = threading.Condition()
+
     def on_change(pvname=None, **kws):
-        ...
+        with cond:
+            cond.notify()
 
     # enumtest is an mbbi record with three strings defined: zero one two
     gw = ca.create_channel("gateway:enumtest")
@@ -73,7 +77,8 @@ def test_enum_prop_cache_value_monitor_ctrl_get(
     # set enum string on IOC
     ioc_enum1 = ca.create_channel("ioc:enumtest.ONST")
     ca.put(ioc_enum1, "uno", wait=True)
-    time.sleep(0.1)
+    with cond:
+        cond.wait(timeout=0.2)
 
     # Now the enum string should have been updated (if IOC supports DBE_PROPERTY)
     ioc_ctrl = ca.get_ctrlvars(ioc)
@@ -133,6 +138,7 @@ def test_enum_prop_cache_value_get_ctrl_get(
     # set enum string on IOC
     ioc_enum1 = ca.create_channel("ioc:enumtest.ONST")
     ca.put(ioc_enum1, "uno", wait=True)
+    # No monitor here, so we must sleep
     time.sleep(0.1)
 
     # Now the enum string should have been updated (if IOC supports DBE_PROPERTY)
@@ -203,6 +209,7 @@ def test_enum_prop_cache_value_get_disconnect_ctrl_get(
     # set enum string on IOC
     ioc_enum1 = ca.create_channel("ioc:enumtest.ONST")
     ca.put(ioc_enum1, "uno", wait=True)
+    # No monitor here, so we must sleep
     time.sleep(0.1)
 
     # reconnect Gateway and IOC

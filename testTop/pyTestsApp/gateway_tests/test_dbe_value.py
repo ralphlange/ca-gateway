@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import logging
+import threading
 import time
 
 import epics
@@ -12,10 +13,13 @@ logger = logging.getLogger(__name__)
 def test_value_no_deadband(standard_env: conftest.EnvironmentInfo):
     """DBE_VALUE monitor on an ai - value changes generate events."""
     events_received = 0
+    cond = threading.Condition()
 
     def on_change(pvname=None, **kws):
         nonlocal events_received
-        events_received += 1
+        with cond:
+            events_received += 1
+            cond.notify()
         logger.info(f' GW update: {pvname} changed to {kws["value"]}')
 
     # gateway:passive0 is a blank ai record
@@ -27,7 +31,9 @@ def test_value_no_deadband(standard_env: conftest.EnvironmentInfo):
 
     for val in range(10):
         ioc.put(val, wait=True)
-    time.sleep(0.1)
 
     # We get 11 events: at connection, then at 10 value changes (puts)
+    with cond:
+        while events_received < 11:
+            assert cond.wait(timeout=10.0)
     assert events_received == 11
