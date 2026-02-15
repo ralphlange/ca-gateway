@@ -74,8 +74,8 @@ def test_prop_cache_value_monitor_ctrl_get(
     # set warning limit on IOC
     ioc_high = ca.create_channel("ioc:gwcachetest.HIGH")
     ca.put(ioc_high, 20.0, wait=True)
-    with cond:
-        cond.wait(timeout=0.2)
+    # Wait for potential cache update in gateway
+    time.sleep(0.1)
 
     # Now the limit should have been updated (if IOC supports DBE_PROPERTY)
     ioc_ctrl = ca.get_ctrlvars(ioc)
@@ -97,8 +97,8 @@ def test_prop_cache_value_monitor_ctrl_get(
     ioc_egu = ca.create_channel("ioc:gwcachetest.EGU")
     old_egu = ca.get(ioc_egu)
     ca.put(ioc_egu, "foo", wait=True)
-    with cond:
-        cond.wait(timeout=0.2)
+    # Wait for potential cache update in gateway
+    time.sleep(0.1)
 
     # Now the unit string should have been updated (if IOC supports DBE_PROPERTY)
     ioc_ctrl = ca.get_ctrlvars(ioc)
@@ -115,6 +115,7 @@ def test_prop_cache_value_monitor_ctrl_get(
     assert (
         egu_val == gw_expected
     ), f"Expected GW units string: {gw_expected}; actual units string: {egu_val}"
+    time.sleep(0.1)
 
 
 def test_prop_cache_value_get_ctrl_get(
@@ -204,6 +205,7 @@ def test_prop_cache_value_get_ctrl_get(
     assert (
         egu_val == gw_expected
     ), f"Expected GW units string: {gw_expected}; actual units string: {egu_val}"
+    time.sleep(0.1)
 
 
 def test_prop_cache_value_get_disconnect_ctrl_get(
@@ -313,3 +315,4 @@ def test_prop_cache_value_get_disconnect_ctrl_get(
     assert egu_val == "foo", (
         "Expected GW units string: wobbles; actual units string: " + egu_val
     )
+    time.sleep(0.1)

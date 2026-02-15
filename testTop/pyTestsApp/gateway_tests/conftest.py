@@ -576,12 +576,9 @@ class GatewayStats:
 def get_prop_support(*, reset_pyepics: bool = True):
     """Is DBE_PROPERTY supported?"""
     events_received_ioc = 0
-    cond = threading.Condition()
     def on_change_ioc(**_):
         nonlocal events_received_ioc
-        with cond:
-            events_received_ioc += 1
-            cond.notify()
+        events_received_ioc += 1
 
     with file_test_environment(
         access=config.default_access,
@@ -599,10 +596,7 @@ def get_prop_support(*, reset_pyepics: bool = True):
 
         passive0_high = epics.PV("ioc:passive0.HIGH", auto_monitor=None)
         passive0_high.put(18.0, wait=True)
-        with cond:
-            while events_received_ioc < 2:
-                if not cond.wait(timeout=2.0):
-                    break
+        time.sleep(0.2)
 
     return events_received_ioc == 2
 

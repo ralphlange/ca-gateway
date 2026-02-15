@@ -130,3 +130,4 @@ def test_cs_studio_value_and_prop_monitor(standard_env: conftest.EnvironmentInfo
         f"At update {events_received_ioc} (change property), received "
         f"structure updates differ:\n\t{differences}"
     )
+    time.sleep(0.1)

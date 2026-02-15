@@ -68,8 +68,8 @@ def test_prop_alarm_levels(standard_env: conftest.EnvironmentInfo):
     with cond:
         while events_received_gw != events_received_ioc:
             assert cond.wait(timeout=10.0)
-        # Wait a little bit longer for any more events
-        cond.wait(timeout=0.2)
+    # Wait a little bit longer for any more events
+    time.sleep(0.1)
     # Pass test if updates from IOC act the same as updates from GW
     assert events_received_gw == events_received_ioc, (
         f"Expected equal number of updates; received {events_received_gw} "

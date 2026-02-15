@@ -99,8 +99,8 @@ def test_subscription_on_connection(
         with cond:
             while not ioc_events or not gateway_events:
                 assert cond.wait(timeout=10.0)
-            # Give it a little more time to make sure all initial events are in
-            cond.wait(timeout=0.1)
+        # Give it a little more time to make sure all initial events are in
+        time.sleep(0.1)
 
     compare_subscription_events(
         gateway_events,
@@ -306,23 +306,24 @@ def test_subscription_with_put(
         with cond:
             while not ioc_events or not gateway_events:
                 assert cond.wait(timeout=10.0)
-            # Give it a little more time to make sure all initial events are in
-            cond.wait(timeout=0.1)
+        # Give it a little more time to make sure all initial events are in
+        time.sleep(0.2)
 
         # Throw away initial events; we care what happens from now on
         with cond:
             del gateway_events[:]
             del ioc_events[:]
 
-        for i, value in enumerate(values):
+        for value in values:
+            target_ioc = len(ioc_events) + 1
+            target_gw = len(gateway_events) + 1
             ca.put(ioc_ch, value)
             with cond:
-                while len(ioc_events) < i + 1 or len(gateway_events) < i + 1:
+                while len(ioc_events) < target_ioc or len(gateway_events) < target_gw:
                     assert cond.wait(timeout=10.0)
 
         # Wait a little longer to make sure no more events are coming
-        with cond:
-            cond.wait(timeout=0.2)
+        time.sleep(0.3)
 
     compare_subscription_events(
         gateway_events,

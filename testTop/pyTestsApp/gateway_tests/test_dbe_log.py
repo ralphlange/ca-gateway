@@ -52,6 +52,7 @@ def test_log_deadband(standard_env: conftest.EnvironmentInfo):
     assert (
         events_received == 5
     ), f"events expected: 5; events received: {events_received}"
+    time.sleep(0.1)
 
     # Any updates inside deadband are an error
     assert (

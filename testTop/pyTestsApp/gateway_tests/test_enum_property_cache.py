@@ -77,8 +77,8 @@ def test_enum_prop_cache_value_monitor_ctrl_get(
     # set enum string on IOC
     ioc_enum1 = ca.create_channel("ioc:enumtest.ONST")
     ca.put(ioc_enum1, "uno", wait=True)
-    with cond:
-        cond.wait(timeout=0.2)
+    # Wait for potential cache update in gateway
+    time.sleep(0.1)
 
     # Now the enum string should have been updated (if IOC supports DBE_PROPERTY)
     ioc_ctrl = ca.get_ctrlvars(ioc)
@@ -93,6 +93,7 @@ def test_enum_prop_cache_value_monitor_ctrl_get(
     assert (
         oneStr == gw_expected
     ), f"Expected GW enum[1]: {gw_expected}; actual enum[1]: {oneStr}"
+    time.sleep(0.1)
 
 
 @pytest.mark.xfail(reason="Unfixed bug #58")
@@ -154,6 +155,7 @@ def test_enum_prop_cache_value_get_ctrl_get(
     assert (
         oneStr == gw_expected
     ), f"Expected GW enum[1]: {gw_expected}; actual enum[1]: {oneStr}"
+    time.sleep(0.1)
 
 
 def test_enum_prop_cache_value_get_disconnect_ctrl_get(
@@ -235,3 +237,4 @@ def test_enum_prop_cache_value_get_disconnect_ctrl_get(
     gw_ctrl = ca.get_ctrlvars(gw)
     oneStr = gw_ctrl["enum_strs"][1]
     assert oneStr == "uno", "Expected GW enum[1]: uno; actual enum[1]: " + oneStr
+    time.sleep(0.1)
