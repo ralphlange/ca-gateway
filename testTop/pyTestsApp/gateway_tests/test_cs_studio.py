@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 import logging
-import time
+import threading
 
 from epics import ca, dbr
 
@@ -24,11 +24,14 @@ def test_cs_studio_value_and_prop_monitor(standard_env: conftest.EnvironmentInfo
     events_received_gw = 0
     ioc_struct = dict()
     gw_struct = dict()
+    cond = threading.Condition()
 
     def on_change_ioc(pvname=None, **kws):
         nonlocal events_received_ioc
-        events_received_ioc += 1
-        ioc_struct.update(kws)
+        with cond:
+            events_received_ioc += 1
+            ioc_struct.update(kws)
+            cond.notify()
         logger.info(
             "New IOC Value for %s value=%s, kw=%s\n",
             pvname,
@@ -38,8 +41,10 @@ def test_cs_studio_value_and_prop_monitor(standard_env: conftest.EnvironmentInfo
 
     def on_change_gw(pvname=None, **kws):
         nonlocal events_received_gw
-        events_received_gw += 1
-        gw_struct.update(kws)
+        with cond:
+            events_received_gw += 1
+            gw_struct.update(kws)
+            cond.notify()
         logger.info(
             "New GW Value for %s value=%s, kw=%s\n",
             pvname,
@@ -73,12 +78,19 @@ def test_cs_studio_value_and_prop_monitor(standard_env: conftest.EnvironmentInfo
         ioc, mask=dbr.DBE_PROPERTY, use_ctrl=True, callback=on_change_ioc
     )
 
-    time.sleep(0.1)
+    # wait for initial updates (one for each subscription)
+    with cond:
+        while events_received_ioc < 2 or events_received_gw < 2:
+            assert cond.wait(timeout=10.0)
 
     # set value on IOC
     ioc_value = ca.create_channel("ioc:gwcachetest")
     ca.put(ioc_value, 10.0, wait=True)
-    time.sleep(0.1)
+
+    # wait for one more update on each
+    with cond:
+        while events_received_ioc < 3 or events_received_gw < 3:
+            assert cond.wait(timeout=10.0)
 
     assert events_received_ioc == events_received_gw, (
         f"After setting value, no. of received updates differ: "
@@ -94,10 +106,18 @@ def test_cs_studio_value_and_prop_monitor(standard_env: conftest.EnvironmentInfo
     # set property on IOC
     ioc_hihi = ca.create_channel("ioc:gwcachetest.HIHI")
     ca.put(ioc_hihi, 123.0, wait=True)
-    time.sleep(0.1)
+
+    # wait for property update
+    with cond:
+        while events_received_ioc < 4 or events_received_gw < 4:
+            assert cond.wait(timeout=10.0)
 
     ca.put(ioc_value, 11.0, wait=True)
-    time.sleep(0.1)
+
+    # wait for value update
+    with cond:
+        while events_received_ioc < 5 or events_received_gw < 5:
+            assert cond.wait(timeout=10.0)
 
     assert events_received_ioc == events_received_gw, (
         f"After setting property, no. of received updates differ: "
@@ -109,3 +129,7 @@ def test_cs_studio_value_and_prop_monitor(standard_env: conftest.EnvironmentInfo
         f"At update {events_received_ioc} (change property), received "
         f"structure updates differ:\n\t{differences}"
     )
+
+    # no more events expected
+    with cond:
+        assert not cond.wait(timeout=1.0)

@@ -10,6 +10,7 @@ aka https://github.com/epics-extensions/ca-gateway/issues/58
 """
 
 import logging
+import threading
 import time
 
 import pytest
@@ -37,8 +38,11 @@ def test_enum_prop_cache_value_monitor_ctrl_get(
     assert gateway_stats.active == 0
     assert gateway_stats.inactive == 0
 
+    cond = threading.Condition()
+
     def on_change(pvname=None, **kws):
-        ...
+        with cond:
+            cond.notify()
 
     # enumtest is an mbbi record with three strings defined: zero one two
     gw = ca.create_channel("gateway:enumtest")
@@ -73,6 +77,7 @@ def test_enum_prop_cache_value_monitor_ctrl_get(
     # set enum string on IOC
     ioc_enum1 = ca.create_channel("ioc:enumtest.ONST")
     ca.put(ioc_enum1, "uno", wait=True)
+    # Wait for potential cache update in gateway
     time.sleep(0.1)
 
     # Now the enum string should have been updated (if IOC supports DBE_PROPERTY)
@@ -88,6 +93,10 @@ def test_enum_prop_cache_value_monitor_ctrl_get(
     assert (
         oneStr == gw_expected
     ), f"Expected GW enum[1]: {gw_expected}; actual enum[1]: {oneStr}"
+
+    # quiescence
+    with cond:
+        assert not cond.wait(timeout=1.0)
 
 
 @pytest.mark.xfail(reason="Unfixed bug #58")
@@ -122,6 +131,7 @@ def test_enum_prop_cache_value_get_ctrl_get(
     assert gateway_stats.active == 1
     assert gateway_stats.inactive == 0
 
+    cond = threading.Condition()
     # enum string should not have been updated
     ioc_ctrl = ca.get_ctrlvars(ioc)
     oneStr = ioc_ctrl["enum_strs"][1]
@@ -133,6 +143,7 @@ def test_enum_prop_cache_value_get_ctrl_get(
     # set enum string on IOC
     ioc_enum1 = ca.create_channel("ioc:enumtest.ONST")
     ca.put(ioc_enum1, "uno", wait=True)
+    # No monitor here, so we must sleep
     time.sleep(0.1)
 
     # Now the enum string should have been updated (if IOC supports DBE_PROPERTY)
@@ -148,6 +159,10 @@ def test_enum_prop_cache_value_get_ctrl_get(
     assert (
         oneStr == gw_expected
     ), f"Expected GW enum[1]: {gw_expected}; actual enum[1]: {oneStr}"
+
+    # quiescence
+    with cond:
+        assert not cond.wait(timeout=1.0)
 
 
 def test_enum_prop_cache_value_get_disconnect_ctrl_get(
@@ -181,6 +196,7 @@ def test_enum_prop_cache_value_get_disconnect_ctrl_get(
     assert gateway_stats.active == 1
     assert gateway_stats.inactive == 0
 
+    cond = threading.Condition()
     # enum string should not have been updated
     ioc_ctrl = ca.get_ctrlvars(ioc)
     oneStr = ioc_ctrl["enum_strs"][1]
@@ -203,6 +219,7 @@ def test_enum_prop_cache_value_get_disconnect_ctrl_get(
     # set enum string on IOC
     ioc_enum1 = ca.create_channel("ioc:enumtest.ONST")
     ca.put(ioc_enum1, "uno", wait=True)
+    # No monitor here, so we must sleep
     time.sleep(0.1)
 
     # reconnect Gateway and IOC
@@ -228,3 +245,7 @@ def test_enum_prop_cache_value_get_disconnect_ctrl_get(
     gw_ctrl = ca.get_ctrlvars(gw)
     oneStr = gw_ctrl["enum_strs"][1]
     assert oneStr == "uno", "Expected GW enum[1]: uno; actual enum[1]: " + oneStr
+
+    # quiescence
+    with cond:
+        assert not cond.wait(timeout=1.0)

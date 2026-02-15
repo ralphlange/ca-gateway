@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 import logging
-import time
+import threading
 
 import epics
 
@@ -18,15 +18,20 @@ def test_prop_alarm_levels(standard_env: conftest.EnvironmentInfo):
     """
     events_received_gw = 0
     events_received_ioc = 0
+    cond = threading.Condition()
 
     def on_change_gw(pvname=None, **kws):
         nonlocal events_received_gw
-        events_received_gw += 1
+        with cond:
+            events_received_gw += 1
+            cond.notify()
         logger.info(f' GW update: {pvname} changed to {kws["value"]}')
 
     def on_change_ioc(pvname: str = "", value=None, **kwargs):
         nonlocal events_received_ioc
-        events_received_ioc += 1
+        with cond:
+            events_received_ioc += 1
+            cond.notify()
         logger.info(f"IOC update: {pvname} changed to {value}")
 
     # gateway:passive0 is a blank ai record
@@ -45,8 +50,15 @@ def test_prop_alarm_levels(standard_env: conftest.EnvironmentInfo):
 
     for val in range(10):
         ioc.put(val, wait=True)
-    time.sleep(0.1)
+
     # We get 1 event: at connection
+    with cond:
+        while events_received_gw < 1 or events_received_ioc < 1:
+            assert cond.wait(timeout=10.0)
+        # DRAIN
+        while cond.wait(timeout=0.2):
+            pass
+
     assert events_received_gw == 1
     assert events_received_ioc == 1
 
@@ -54,11 +66,20 @@ def test_prop_alarm_levels(standard_env: conftest.EnvironmentInfo):
     pvhigh.put(18.0, wait=True)
     pvlolo.put(10.0, wait=True)
     pvlow.put(12.0, wait=True)
-    time.sleep(0.1)
 
     # Depending on the IOC (supporting PROPERTY changes on limits or not) we get 0 or 4 events.
+    with cond:
+        while events_received_gw != events_received_ioc:
+            assert cond.wait(timeout=10.0)
+        # DRAIN
+        while cond.wait(timeout=0.2):
+            pass
     # Pass test if updates from IOC act the same as updates from GW
     assert events_received_gw == events_received_ioc, (
         f"Expected equal number of updates; received {events_received_gw} "
         f"from GW and {events_received_ioc} from IOC"
     )
+
+    # no more events expected
+    with cond:
+        assert not cond.wait(timeout=1.0)
