@@ -9,7 +9,9 @@ from . import conftest
 logger = logging.getLogger(__name__)
 
 
-def test_cs_studio_value_and_prop_monitor(standard_env: conftest.EnvironmentInfo):
+def test_cs_studio_value_and_prop_monitor(
+    standard_env: conftest.EnvironmentInfo, prop_supported: bool
+):
     """
     Test CS-Studio workflow through the Gateway.
 
@@ -103,32 +105,33 @@ def test_cs_studio_value_and_prop_monitor(standard_env: conftest.EnvironmentInfo
         f"structure updates differ:\n\t{differences}"
     )
 
-    # set property on IOC
-    ioc_hihi = ca.create_channel("ioc:gwcachetest.HIHI")
-    ca.put(ioc_hihi, 123.0, wait=True)
+    if prop_supported:
+        # set property on IOC
+        ioc_hihi = ca.create_channel("ioc:gwcachetest.HIHI")
+        ca.put(ioc_hihi, 123.0, wait=True)
 
-    # wait for property update
-    with cond:
-        while events_received_ioc < 4 or events_received_gw < 4:
-            assert cond.wait(timeout=10.0)
+        # wait for property update
+        with cond:
+            while events_received_ioc < 4 or events_received_gw < 4:
+                assert cond.wait(timeout=10.0)
 
-    ca.put(ioc_value, 11.0, wait=True)
+        ca.put(ioc_value, 11.0, wait=True)
 
-    # wait for value update
-    with cond:
-        while events_received_ioc < 5 or events_received_gw < 5:
-            assert cond.wait(timeout=10.0)
+        # wait for value update
+        with cond:
+            while events_received_ioc < 5 or events_received_gw < 5:
+                assert cond.wait(timeout=10.0)
 
-    assert events_received_ioc == events_received_gw, (
-        f"After setting property, no. of received updates differ: "
-        f"GW {events_received_gw}, IOC {events_received_ioc}"
-    )
+        assert events_received_ioc == events_received_gw, (
+            f"After setting property, no. of received updates differ: "
+            f"GW {events_received_gw}, IOC {events_received_ioc}"
+        )
 
-    differences = conftest.compare_structures(gw_struct, ioc_struct)
-    assert not differences, (
-        f"At update {events_received_ioc} (change property), received "
-        f"structure updates differ:\n\t{differences}"
-    )
+        differences = conftest.compare_structures(gw_struct, ioc_struct)
+        assert not differences, (
+            f"At update {events_received_ioc} (change property), received "
+            f"structure updates differ:\n\t{differences}"
+        )
 
     # no more events expected
     with cond:
