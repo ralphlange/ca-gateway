@@ -731,7 +731,7 @@ def ca_subscription(
     mask: int = epics.dbr.DBE_VALUE,
     form: str = "time",
     count: int = 0,
-    timeout: float = 0.5,
+    timeout: float = 10.0,
 ) -> Generator[int, None, None]:
     """
     Create a low-level channel and subscription for a provided pvname.
@@ -792,7 +792,7 @@ def ca_subscription_pair(
     mask: int = epics.dbr.DBE_VALUE,
     form: str = "time",
     count: int = 0,
-    timeout: float = 0.5,
+    timeout: float = 10.0,
     ioc_prefix: str = "ioc:",
     gateway_prefix: str = "gateway:",
 ) -> Generator[Tuple[int, int], None, None]:
@@ -859,7 +859,7 @@ def pyepics_caget(
     pvname: str,
     form: str = "time",
     count: int = 0,
-    timeout: float = 0.5,
+    timeout: float = 10.0,
 ) -> Dict[str, Any]:
     """
     Use low-level pyepics.ca to get data from a PV.
@@ -905,7 +905,7 @@ def pyepics_caget_pair(
     pvname: str,
     form: str = "time",
     count: int = 0,
-    timeout: float = 0.5,
+    timeout: float = 10.0,
     ioc_prefix: str = "ioc:",
     gateway_prefix: str = "gateway:",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -956,7 +956,7 @@ def pyepics_caget_pair(
 def pyepics_caput(
     pvname: str,
     value: Any,
-    timeout: float = 0.5,
+    timeout: float = 10.0,
 ) -> None:
     """
     Use low-level pyepics.ca to put data to a PV.
