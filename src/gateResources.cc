@@ -157,49 +157,42 @@ static int gddGetOurType(const gdd *gddVal)
   }
 }
 
+static aitEnum getAitTypeForDbFld(short dbfld_dbrtype)
+{
+  if (dbfld_dbrtype == DBFLD::D_CHAR) return aitEnumInt8;
+  if (dbfld_dbrtype == DBFLD::D_UCHAR) return aitEnumUint8;
+  if (dbfld_dbrtype == DBFLD::D_SHORT) return aitEnumInt16;
+  if (dbfld_dbrtype == DBFLD::D_USHORT) return aitEnumUint16;
+  if (dbfld_dbrtype == DBFLD::D_ENUM) return aitEnumUint16;
+  if (dbfld_dbrtype == DBFLD::D_LONG) return aitEnumInt32;
+  if (dbfld_dbrtype == DBFLD::D_ULONG) return aitEnumUint32;
+  if (dbfld_dbrtype == DBFLD::D_FLOAT) return aitEnumFloat32;
+  if (dbfld_dbrtype == DBFLD::D_DOUBLE) return aitEnumFloat64;
+  return aitEnumString;
+}
+
+static void safeAitConvertValue(VALUE *valueStruct, short dbfld_dbrtype,
+                               aitEnum srcType, const void* srcPtr)
+{
+  if (dbfld_dbrtype == DBFLD::D_STRING) {
+    aitString x;
+    aitConvert(aitEnumString, &x, srcType, srcPtr, 1);
+    size_t siz = sizeof(valueStruct->v_string);
+    strncpy(valueStruct->v_string, x, siz);
+    valueStruct->v_string[siz-1] = 0;
+    x.clear();
+  } else {
+    aitEnum destAitType = getAitTypeForDbFld(dbfld_dbrtype);
+    aitConvert(destAitType, valueStruct, srcType, srcPtr, 1);
+  }
+}
+
 static int gddToVALUE(const gdd *gddVal, short dbfld_dbrtype, VALUE *valueStruct)
 {
   memset(valueStruct,0,sizeof(VALUE));
-  if (dbfld_dbrtype == DBFLD::D_CHAR) {
-          aitInt8 x;
-          gddVal->get(x);
-          valueStruct->v_int8 = x;
-   } else if (dbfld_dbrtype == DBFLD::D_UCHAR) {
-          aitUint8 x;
-          gddVal->get(x);
-          valueStruct->v_uint8 = x;
-   } else if (dbfld_dbrtype == DBFLD::D_SHORT) {
-          aitInt16 x;
-          gddVal->get(x);
-          valueStruct->v_int16 = x;
-   } else if (dbfld_dbrtype == DBFLD::D_USHORT) {
-          aitUint16 x;
-          gddVal->get(x);
-          valueStruct->v_uint16 = x;
-   } else if (dbfld_dbrtype == DBFLD::D_LONG) {
-          aitInt32 x;
-          gddVal->get(x);
-          valueStruct->v_int32 = x;
-   } else if (dbfld_dbrtype == DBFLD::D_ULONG) {
-          aitUint32 x;
-          gddVal->get(x);
-          valueStruct->v_uint32 = x;
-   } else if (dbfld_dbrtype == DBFLD::D_FLOAT) {
-          aitFloat32 x;
-          gddVal->get(x);
-          valueStruct->v_float = x;
-   } else if (dbfld_dbrtype == DBFLD::D_DOUBLE) {
-          aitFloat64 x;
-          gddVal->get(x);
-          valueStruct->v_double = x;
-   } else { // DBFLD::D_STRING and unknown
-          aitString x;
-          gddVal->get(x);
-          size_t siz = sizeof(valueStruct->v_string);
-          strncpy(valueStruct->v_string,x,siz);
-          valueStruct->v_string[siz-1] = 0;
-   }
-   return(0);
+  const void* dataPtr = gddVal->isScalar() ? gddVal->dataAddress() : gddVal->dataPointer();
+  safeAitConvertValue(valueStruct, dbfld_dbrtype, gddVal->primitiveType(), dataPtr);
+  return(0);
 }
 
 /*
@@ -233,6 +226,41 @@ static int VALUE_to_string(char *pbuf, size_t buflen, const VALUE *pval, short d
 		char type[32];
 		epicsSnprintf(type, sizeof(type), "unknown type %d ", dbfld_dbrtype);
         return epicsSnprintf(pbuf, buflen, "%s%s", (prefix_with_type ? type : ""), pval->v_string);
+    }
+}
+
+static int gdd_to_string(char *pbuf, size_t buflen, const gdd *gddVal)
+{
+    if (gddVal == NULL || gddVal->primitiveType() == aitEnumInvalid) {
+        return epicsSnprintf(pbuf, buflen, "?");
+    }
+    if (gddVal->isScalar()) {
+        VALUE val;
+        short type = gddGetOurType(gddVal);
+        gddToVALUE(gddVal, type, &val);
+        return VALUE_to_string(pbuf, buflen, &val, type);
+    } else {
+        size_t nelem = gddVal->getDataSizeElements();
+        size_t n = 0;
+        n += epicsSnprintf(pbuf + n, buflen - n, "[");
+        short type = gddGetOurType(gddVal);
+        aitEnum srcAitType = gddVal->primitiveType();
+        size_t elementSize = aitSize[srcAitType];
+        const char* dataPtr = (const char*)gddVal->dataPointer();
+
+        for (size_t i = 0; i < nelem; ++i) {
+            if (i > 0) n += epicsSnprintf(pbuf + n, buflen - n, ", ");
+            if (n >= buflen - 10) {
+                n += epicsSnprintf(pbuf + n, buflen - n, "...");
+                break;
+            }
+            VALUE val;
+            memset(&val, 0, sizeof(val));
+            safeAitConvertValue(&val, type, srcAitType, dataPtr + i * elementSize);
+            n += VALUE_to_string(pbuf + n, buflen - n, &val, type);
+        }
+        n += epicsSnprintf(pbuf + n, buflen - n, "]");
+        return n;
     }
 }
 
@@ -411,20 +439,9 @@ void gateResources::putLog(
        const gdd       *       new_value       )
 {
        if(fp) {
-               VALUE   oldVal,                 newVal;
-               char    acOldVal[20],   acNewVal[20];
-               if ( old_value == NULL )
-               {
-                       acOldVal[0] = '?';
-                       acOldVal[1] = '\0';
-               }
-               else
-               {
-                       gddToVALUE( old_value, gddGetOurType(old_value), &oldVal );
-                       VALUE_to_string( acOldVal, 20, &oldVal, gddGetOurType(old_value) );
-               }
-               gddToVALUE( new_value, gddGetOurType(new_value), &newVal );
-               VALUE_to_string( acNewVal, 20, &newVal, gddGetOurType(new_value) );
+               char    acOldVal[1024],   acNewVal[1024];
+               gdd_to_string( acOldVal, sizeof(acOldVal), old_value );
+               gdd_to_string( acNewVal, sizeof(acNewVal), new_value );
                fprintf(fp,"%s %s@%s %s %s old=%s\n",
                  timeStamp(),
                  user?user:"Unknown",
