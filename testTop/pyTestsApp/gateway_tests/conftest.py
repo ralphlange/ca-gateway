@@ -45,6 +45,7 @@ def run_process(
     interactive: bool = False,
     startup_time: float = 0.5,
     wait_for: Optional[bytes] = None,
+    quiescence_period: float = 0.0,
 ):
     """
     Run ``cmd`` and yield a subprocess.Popen instance.
@@ -119,6 +120,10 @@ def run_process(
     try:
         yield proc
     finally:
+        if quiescence_period > 0:
+            logger.debug("Waiting for quiescence period of %.1f sec", quiescence_period)
+            time.sleep(quiescence_period)
+
         if interactive:
             logger.debug("Exiting interactive process %s", cmd[0])
             proc.stdin.close()
@@ -249,12 +254,14 @@ def run_gateway(
     if verbose:
         cmd.extend(["-debug", str(config.gateway_debug_level)])
 
+    quiescence_period = 1.0 if os.environ.get("BASE", "").startswith("3.14") else 0.0
     with run_process(
         cmd,
         dict(os.environ),
         verbose=verbose,
         interactive=False,
         wait_for=b"Running as user",
+        quiescence_period=quiescence_period,
     ) as proc:
         yield proc
 
