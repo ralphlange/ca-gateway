@@ -35,6 +35,7 @@ jobs:
       TEST: ${{ matrix.test }}
       SET: ${{ matrix.set }}
       PYTHON: ${{ matrix.python || 'python3' }}
+      ADD_MODULES: ${{ matrix.ADD_MODULES }}
       JUNIT_PREFIX: ${{ matrix.name }}_${{ matrix.os }}_
       SKIP_CAPUTLOG_TESTS: ${{ matrix.skip_caputlog }}
 
@@ -154,7 +155,7 @@ jobs:
       if: runner.os == 'Windows'
     - name: Install Python test dependencies with pip (MacOS)
       run: |
-        python3 -m pip install pytest pytest-tap pyepics caproto
+        python3 -m pip install --break-system-packages pytest pytest-tap pyepics caproto
       if: runner.os == 'macOS'
     - name: Prepare and compile dependencies
       run: python .ci/cue.py prepare

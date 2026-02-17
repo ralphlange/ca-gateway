@@ -3,4 +3,5 @@ MODULES=caPutLog
 BASE=3.14
 CAPUTLOG=R4.0
 
+PCRE=master
 PCRE_REPOURL=https://github.com/epics-modules/pcre
