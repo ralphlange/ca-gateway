@@ -1,1 +1,3 @@
+MODULES=caPutLog
+
 BASE=3.15
