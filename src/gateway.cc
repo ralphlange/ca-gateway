@@ -57,6 +57,15 @@
 #include <epicsVersion.h>
 #include <caProto.h>
 #include <errSymTbl.h>
+
+#ifdef USE_PCRE2
+#define GATE_REGEX_LIB "PCRE2"
+#elif defined(USE_PCRE)
+#define GATE_REGEX_LIB "PCRE"
+#else
+#define GATE_REGEX_LIB "BRE"
+#endif
+
 #include "gateResources.h"
 #include "gateServer.h"
 
@@ -576,8 +585,8 @@ static int startEverything(char *prefix)
 
 	// Write file headers
 	// Output
-	printf("%s %s [%s %s]\n",
-	  timeStamp(),GATEWAY_VERSION_STRING,__DATE__,__TIME__);
+	printf("%s %s (regex: %s) [%s %s]\n",
+	  timeStamp(),GATEWAY_VERSION_STRING,GATE_REGEX_LIB,__DATE__,__TIME__);
 #ifndef _WIN32
 	if(global_resources->getServerMode()) {
 		printf("%s PID=%d ServerPID=%d\n",EPICS_VERSION_STRING,

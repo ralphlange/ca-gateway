@@ -36,6 +36,7 @@ jobs:
       SET: ${{ matrix.set }}
       JUNIT_PREFIX: ${{ matrix.name }}_${{ matrix.os }}_
       SKIP_CAPUTLOG_TESTS: ${{ matrix.skip_caputlog }}
+      USE_PCRE2: YES
 
     strategy:
       fail-fast: false

@@ -26,12 +26,20 @@ logger = logging.getLogger(__name__)
 #
 # NOTE: this pvlist is done in BRE regex format and not PCRE and assumes
 # the gateway was built with it.
-pvlist_header = r"""
-EVALUATION ORDER ALLOW, DENY
-gateway:\(.*\)  ALIAS ioc:\1
-ioc:.*          DENY
-gwtest:.*       ALLOW
-"""
+if config.use_pcre:
+    pvlist_header = r"""
+    EVALUATION ORDER ALLOW, DENY
+    gateway:(.*)  ALIAS ioc:\1
+    ioc:.*          DENY
+    gwtest:.*       ALLOW
+    """
+else:
+    pvlist_header = r"""
+    EVALUATION ORDER ALLOW, DENY
+    gateway:\(.*\)  ALIAS ioc:\1
+    ioc:.*          DENY
+    gwtest:.*       ALLOW
+    """
 
 pvlist_footer = r"""
 """
@@ -39,7 +47,13 @@ pvlist_footer = r"""
 
 def with_pvlist_header(pvlist_rules: str) -> str:
     """Add on the 'standard' pvlist header to the provided rules."""
-    return "\n".join((pvlist_header, textwrap.dedent(pvlist_rules), pvlist_footer))
+    return "\n".join(
+        (
+            textwrap.dedent(pvlist_header),
+            textwrap.dedent(pvlist_rules),
+            textwrap.dedent(pvlist_footer),
+        )
+    )
 
 
 @dataclasses.dataclass

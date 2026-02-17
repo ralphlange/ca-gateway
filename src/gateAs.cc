@@ -231,6 +231,11 @@ aitBool gateAsEntry::compilePattern(int line) {
 		return aitFalse;
 	}
 	match_data = pcre2_match_data_create_from_pattern(pat_buff, NULL);
+	if (!match_data) {
+		fprintf(stderr,"Line %d: Failed to create PCRE2 match data for: %s\n",
+                    line, pattern);
+		return aitFalse;
+	}
 	uint32_t count;
 	pcre2_pattern_info(pat_buff, PCRE2_INFO_CAPTURECOUNT, &count);
 	substrings = (int)count + 1;
@@ -396,7 +401,7 @@ gateAsEntry* gateAs::findEntryInList(const char* pv, gateAsList& list) const
         int len = (int) strlen(pv);
 #ifdef USE_PCRE2
 		pi->substrings = pcre2_match(pi->pat_buff, (PCRE2_SPTR)pv, len, 0, PCRE2_ANCHORED, pi->match_data, NULL);
-		if((pi->substrings >= 0 && pcre2_get_ovector_pointer(pi->match_data)[1] == (PCRE2_SIZE)len)
+		if((pi->substrings >= 0 && pi->match_data && pcre2_get_ovector_pointer(pi->match_data)[1] == (PCRE2_SIZE)len)
 #ifdef USE_NEG_REGEXP
 		    ^ pi->negate_pattern
 #endif
