@@ -38,36 +38,6 @@ ifeq ($(USE_PCRE2),YES)
   else
     USR_SYS_LIBS += pcre2-8
   endif
-else ifeq ($(USE_PCRE),YES)
-  USR_CXXFLAGS += -DUSE_PCRE
-  ifeq ($(OS_CLASS),WIN32)
-    ifneq (,$(wildcard $(PCRE_DIR)/inc/*.h))
-      # Legacy nonstandard pcre3 download and manual install
-      USR_INCLUDES += -I$(PCRE_DIR)/inc
-      PROD_LIBS += pcre3
-      ifeq ($(CMPLR_CLASS),msvc)
-        ifeq ($(T_A),windows-x64)
-          pcre3_DIR = $(PCRE_DIR)/lib/x64
-        else
-          pcre3_DIR = $(PCRE_DIR)/lib
-        endif
-      else
-        pcre3_DIR = $(PCRE_DIR)/bin
-      endif
-    else
-      ifdef PCRE_DIR
-        # Modern or MSYS2 pcre used in Windows context
-        USR_INCLUDES += -I$(PCRE_DIR)/include
-        PROD_LIBS += pcre
-        pcre_DIR = $(PCRE_DIR)/lib
-      else
-        # MSYS2 package pcre-devel used in MSYSTEM context
-        USR_SYS_LIBS += pcre
-      endif
-    endif      
-  else
-    USR_SYS_LIBS += pcre
-  endif
 else
   # On Linux basic regex is part of libc
   ifneq ($(OS_CLASS),Linux)

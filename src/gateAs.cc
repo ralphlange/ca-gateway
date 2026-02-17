@@ -83,10 +83,7 @@ gateAsEntry::gateAsEntry(const char* pattern, const char* realname, const char* 
 #ifdef USE_PCRE2
 	pat_buff = NULL;
 	match_data = NULL;
-#elif defined(USE_PCRE)
-	pat_buff = NULL;
-	ovector = NULL;
-	ovecsize = 0;
+	substrings = 0;
 #else
 	// Set pointers in the pattern buffer
 	pat_buff.buffer=NULL;
@@ -104,9 +101,6 @@ gateAsEntry::~gateAsEntry(void)
 #ifdef USE_PCRE2
 	pcre2_code_free(pat_buff);
 	pcre2_match_data_free(match_data);
-#elif defined(USE_PCRE)
-	pcre_free(pat_buff);
-	pcre_free(ovector);
 #else
 	regfree(&pat_buff);
 	// Free allocted stuff in registers
@@ -147,17 +141,6 @@ void gateAsEntry::getRealName(const char* pv, char* rname, int len)
 					if(n < substrings && ovector[2*n] != PCRE2_UNSET) {
 						for(j=(int)ovector[2*n];
 							ir<len && j<(int)ovector[2*n+1];
-							j++)
-						  rname[ir++] = pv[j];
-						if(ir==len)	{
-							rname[ir-1] = '\0';
-							break;
-						}
-					}
-#elif defined(USE_PCRE)
-					if(n < substrings && ovector[2*n] >= 0) {
-						for(j=ovector[2*n];
-							ir<len && j<ovector[2*n+1];
 							j++)
 						  rname[ir++] = pv[j];
 						if(ir==len)	{
@@ -238,29 +221,19 @@ aitBool gateAsEntry::compilePattern(int line) {
 	int errorcode;
 	PCRE2_SIZE erroroffset;
 	pat_buff = pcre2_compile((PCRE2_SPTR)pattern, PCRE2_ZERO_TERMINATED, 0, &errorcode, &erroroffset, NULL);
-	if(!pat_buff) {
+	if(!pat_buff)	{
 		PCRE2_UCHAR buffer[256];
 		pcre2_get_error_message(errorcode, buffer, sizeof(buffer));
-		fprintf(stderr,"Line %d: Error after %d chars in Perl regexp: %s\n",
-                    line, (int)erroroffset, (char*)buffer);
+		fprintf(stderr,"Line %d: Error after %d chars in PCRE2 regexp: %s\n",
+                    line, (int)erroroffset, buffer);
                 fprintf(stderr,"%s\n", pattern);
                 fprintf(stderr,"%*c\n", (int)erroroffset+1, '^');
 		return aitFalse;
 	}
 	match_data = pcre2_match_data_create_from_pattern(pat_buff, NULL);
-#elif defined(USE_PCRE)
-	int erroffset;
-        pat_buff = pcre_compile(pattern, 0, &err, &erroffset, NULL);
-	if(!pat_buff)	{
-		fprintf(stderr,"Line %d: Error after %d chars in Perl regexp: %s\n",
-                    line, erroffset, err);
-                fprintf(stderr,"%s\n", pattern);
-                fprintf(stderr,"%*c\n", erroffset+1, '^');
-		return aitFalse;
-	}
-        pcre_fullinfo(pat_buff, NULL, PCRE_INFO_CAPTURECOUNT, &ovecsize);
-        ovecsize = (ovecsize+1)*3;
-        ovector = (int*) pcre_malloc (sizeof(int)*ovecsize);
+	uint32_t count;
+	pcre2_pattern_info(pat_buff, PCRE2_INFO_CAPTURECOUNT, &count);
+	substrings = (int)count + 1;
 #else
 	pat_buff.translate=0; pat_buff.fastmap=0;
 	pat_buff.allocated=0; pat_buff.buffer=0;
@@ -424,14 +397,6 @@ gateAsEntry* gateAs::findEntryInList(const char* pv, gateAsList& list) const
 #ifdef USE_PCRE2
 		pi->substrings = pcre2_match(pi->pat_buff, (PCRE2_SPTR)pv, len, 0, PCRE2_ANCHORED, pi->match_data, NULL);
 		if((pi->substrings >= 0 && pcre2_get_ovector_pointer(pi->match_data)[1] == (PCRE2_SIZE)len)
-#ifdef USE_NEG_REGEXP
-		    ^ pi->negate_pattern
-#endif
-		) break;
-#elif defined(USE_PCRE)
-		pi->substrings=pcre_exec(pi->pat_buff, NULL,
-                    pv, len, 0, PCRE_ANCHORED, pi->ovector, 30);
-		if((pi->substrings>=0 && pi->ovector[1] == len)
 #ifdef USE_NEG_REGEXP
 		    ^ pi->negate_pattern
 #endif

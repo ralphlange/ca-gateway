@@ -48,8 +48,6 @@ extern "C" {
 #ifdef USE_PCRE2
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
-#elif defined(USE_PCRE)
-#include <pcre.h>
 #else
 
 extern "C" {
@@ -68,7 +66,7 @@ extern "C" {
 #endif
 }
 
-#endif /* USE_PCRE */
+#endif /* USE_PCRE2 */
 /*
  * Standard FALSE and TRUE macros
  */
@@ -135,11 +133,6 @@ public:
 	pcre2_code* pat_buff;
 	pcre2_match_data* match_data;
 	int substrings;
-#elif defined(USE_PCRE)
-	pcre* pat_buff;
-	int substrings;
-	int ovecsize;
-	int *ovector;
 #else
 	char pat_valid;
 	struct re_pattern_buffer pat_buff;
