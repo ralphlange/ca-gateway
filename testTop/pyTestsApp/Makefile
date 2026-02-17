@@ -21,6 +21,9 @@ PVLIST_NO = pvlist_bre.txt
 
 PYTEST_OPTIONS ?= -v
 JUNIT_PREFIX ?= gateway_tests_
+ifeq ($(PYTHON),)
+PYTHON = python3
+endif
 
 CLEANS += *.pyc $(TEST_FILES) pvlist.txt gateway.* *.tap
 
@@ -42,10 +45,10 @@ endif
 
 runtests:
 	@echo
-	@echo "Python is: $(shell which python)"
+	@echo "Python is: $(shell which $(PYTHON))"
 	@echo "GATEWAY_ROOT=$(GATEWAY_ROOT)"
 	@echo "Running pytest with options: '$(PYTEST_OPTIONS)'"
-	python3 -m pytest --junit-xml="result.xml" --junit-prefix="$(JUNIT_PREFIX)" $(TEST_MODULE) $(PYTEST_OPTIONS)
+	$(PYTHON) -m pytest --junit-xml="result.xml" --junit-prefix="$(JUNIT_PREFIX)" $(TEST_MODULE) $(PYTEST_OPTIONS)
 
 $(TAPFILES): .runtests.tap ;
 .INTERMEDIATE: .runtests.tap

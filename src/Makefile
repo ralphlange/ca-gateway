@@ -28,7 +28,9 @@ endif
 ifeq ($(USE_PCRE),YES)
   USR_CXXFLAGS += -DUSE_PCRE
   ifeq ($(OS_CLASS),WIN32)
-    PCRE_DIR ?= $(PCRE)
+    ifneq ($(PCRE),)
+      PCRE_DIR = $(PCRE)
+    endif
     ifneq (,$(wildcard $(PCRE_DIR)/inc/*.h))
       # Legacy nonstandard pcre3 download and manual install
       USR_INCLUDES += -I$(PCRE_DIR)/inc
