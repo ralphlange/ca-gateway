@@ -1615,7 +1615,7 @@ static int setEnv(const char *var, int ival, char **envString)
 	}
 #else
 	char *pVal=strchr(*envString,'=');
-	if(!pVal || !(pVal+1)) {
+	if(!pVal || !(*(pVal+1))) {
 		epicsEnvSet(var,"");
 	} else {
 		epicsEnvSet(var,pVal+1);

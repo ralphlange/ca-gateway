@@ -16,7 +16,7 @@ def _boolean_option(value: Optional[str]) -> bool:
 
     try:
         return int(value) > 0
-    except TypeError:
+    except (TypeError, ValueError):
         return value.lower() in {"yes", "y", "true"}
 
 

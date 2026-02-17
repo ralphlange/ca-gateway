@@ -149,12 +149,6 @@ typedef void (*SigFunc)(int);
 static SigFunc save_usr1=NULL;
 static SigFunc save_usr2=NULL;
 
-static void sig_pipe(int)
-{
-	fprintf(stderr,"Got SIGPIPE interrupt!");
-	signal(SIGPIPE,sig_pipe);
-}
-
 static void sig_usr1(int x)
 {
 	// Call a class function to get access to class variables

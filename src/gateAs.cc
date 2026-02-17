@@ -210,8 +210,6 @@ aitBool gateAsEntry::init(const char* host,	// Host name to deny
 #endif
 
 aitBool gateAsEntry::compilePattern(int line) {
-	const char *err;
-
 #ifdef USE_NEG_REGEXP
         negate_pattern = (pattern[0] == '!');
         if (negate_pattern) pattern++;
@@ -240,6 +238,7 @@ aitBool gateAsEntry::compilePattern(int line) {
 	pcre2_pattern_info(pat_buff, PCRE2_INFO_CAPTURECOUNT, &count);
 	substrings = (int)count + 1;
 #else
+	const char *err;
 	pat_buff.translate=0; pat_buff.fastmap=0;
 	pat_buff.allocated=0; pat_buff.buffer=0;
 
