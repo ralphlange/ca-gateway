@@ -3,3 +3,4 @@ MODULES=pcas caPutLog
 BASE=7.0
 BASE_RECURSIVE=NO
 
+PCRE_REPOURL=https://github.com/epics-modules/pcre

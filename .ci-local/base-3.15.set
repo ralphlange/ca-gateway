@@ -1,3 +1,5 @@
 MODULES=caPutLog
 
 BASE=3.15
+
+PCRE_REPOURL=https://github.com/epics-modules/pcre

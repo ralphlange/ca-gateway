@@ -75,23 +75,29 @@ jobs:
             name: "B-7.0 Ub-24 clang-18 C++11"
 
 # MacOS and Windows builds need regex library
-#          - os: macos-latest
-#            cmp: clang
-#            configuration: default
-#            set: "base-7.0"
-#            name: "B-7.0 MacOS clang-12"
+          - os: macos-latest
+            cmp: clang
+            configuration: default
+            set: "base-7.0"
+            name: "B-7.0 MacOS clang-15"
+            extra: "USE_PCRE=YES"
+            ADD_MODULES: "pcre"
 
-#          - os: windows-2022
-#            cmp: gcc
-#            configuration: default
-#            set: "base-7.0"
-#            name: "B-7.0 Win-22 mingw"
+          - os: windows-2022
+            cmp: gcc
+            configuration: default
+            set: "base-7.0"
+            name: "B-7.0 Win-22 mingw"
+            extra: "USE_PCRE=YES"
+            ADD_MODULES: "pcre"
 
-#          - os: windows-2022
-#            cmp: vs2022
-#            configuration: debug
-#            set: "base-7.0"
-#            name: "B-7.0 Win-22 MSC-22, debug"
+          - os: windows-2022
+            cmp: vs2022
+            configuration: debug
+            set: "base-7.0"
+            name: "B-7.0 Win-22 MSC-22, debug"
+            extra: "USE_PCRE=YES"
+            ADD_MODULES: "pcre"
 
           - os: ubuntu-24.04
             cmp: gcc
@@ -126,8 +132,16 @@ jobs:
     - name: "apt-get install"
       run: |
         sudo apt-get update
-        sudo apt-get -y install qemu-system-x86 g++-mingw-w64-x86-64 gdb
+        sudo apt-get -y install qemu-system-x86 g++-mingw-w64-x86-64 gdb libpcre3-dev
       if: runner.os == 'Linux'
+    - name: "brew install"
+      run: |
+        brew install pcre
+      if: runner.os == 'macOS'
+    - name: "choco install"
+      run: |
+        choco install pcre
+      if: runner.os == 'Windows'
     - name: Install Python test dependencies with pip
       run: |
         pip install --break-system-packages pytest pytest-tap pyepics caproto
@@ -136,6 +150,14 @@ jobs:
       run: |
         pip install pytest pytest-tap pyepics caproto
       if: matrix.os == 'ubuntu-22.04'
+    - name: Install Python test dependencies with pip (Windows)
+      run: |
+        pip install pytest pytest-tap pyepics caproto
+      if: runner.os == 'Windows'
+    - name: Install Python test dependencies with pip (MacOS)
+      run: |
+        pip install pytest pytest-tap pyepics caproto
+      if: runner.os == 'macOS'
     - name: Prepare and compile dependencies
       run: python .ci/cue.py prepare
     - name: Build main module

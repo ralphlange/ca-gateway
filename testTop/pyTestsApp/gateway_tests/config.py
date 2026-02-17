@@ -20,11 +20,19 @@ def _boolean_option(value: Optional[str]) -> bool:
         return value.lower() in {"yes", "y", "true"}
 
 
-libca_so = os.path.join(
-    os.environ["EPICS_BASE"], "lib", os.environ["EPICS_HOST_ARCH"], "libca.so"
-)
-if "PYEPICS_LIBCA" not in os.environ and os.path.exists(libca_so):
-    os.environ["PYEPICS_LIBCA"] = libca_so
+is_windows = os.name == "nt"
+
+if "PYEPICS_LIBCA" not in os.environ:
+    if is_windows:
+        libca = os.path.join(
+            os.environ["EPICS_BASE"], "bin", os.environ["EPICS_HOST_ARCH"], "ca.dll"
+        )
+    else:
+        libca = os.path.join(
+            os.environ["EPICS_BASE"], "lib", os.environ["EPICS_HOST_ARCH"], "libca.so"
+        )
+    if os.path.exists(libca):
+        os.environ["PYEPICS_LIBCA"] = libca
 
 # Default Channel Access ports to use:
 default_ioc_port = 62782
@@ -49,6 +57,8 @@ if not host_arch:
 gateway_executable = os.path.join(
     os.environ.get("GATEWAY_ROOT", "."), "bin", host_arch, "gateway"
 )
+if is_windows and not gateway_executable.endswith(".exe"):
+    gateway_executable += ".exe"
 
 
 def _get_softioc(host_arch: str) -> str:
@@ -65,6 +75,9 @@ def _get_softioc(host_arch: str) -> str:
         )
     else:
         ioc_executable = None
+
+    if ioc_executable and is_windows and not ioc_executable.endswith(".exe"):
+        ioc_executable += ".exe"
 
     if not ioc_executable or not os.path.exists(ioc_executable):
         ioc_executable = shutil.which("softIoc")
