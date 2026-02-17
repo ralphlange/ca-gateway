@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
+import sys
 from typing import Optional
 
 MODULE_PATH = pathlib.Path(__file__).parent.resolve()
@@ -16,16 +17,21 @@ def _boolean_option(value: Optional[str]) -> bool:
 
     try:
         return int(value) > 0
-    except TypeError:
+    except (ValueError, TypeError):
         return value.lower() in {"yes", "y", "true"}
 
 
 is_windows = os.name == "nt"
+is_macos = sys.platform == "darwin"
 
 if "PYEPICS_LIBCA" not in os.environ:
     if is_windows:
         libca = os.path.join(
             os.environ["EPICS_BASE"], "bin", os.environ["EPICS_HOST_ARCH"], "ca.dll"
+        )
+    elif is_macos:
+        libca = os.path.join(
+            os.environ["EPICS_BASE"], "lib", os.environ["EPICS_HOST_ARCH"], "libca.dylib"
         )
     else:
         libca = os.path.join(

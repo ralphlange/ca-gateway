@@ -6,7 +6,7 @@ from typing import List, Optional
 
 import pytest
 
-from . import conftest
+from . import config, conftest
 
 try:
     from . import util
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # strings.
 #
 # Use the correct pvlist header based on whether PCRE is enabled
-if conftest.config.use_pcre:
+if config.use_pcre:
     pvlist_header = r"""
 EVALUATION ORDER ALLOW, DENY
 gateway:(.*)    ALIAS ioc:\1

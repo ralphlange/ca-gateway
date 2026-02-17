@@ -34,8 +34,8 @@ jobs:
       EXTRA: ${{ matrix.extra }}
       TEST: ${{ matrix.test }}
       SET: ${{ matrix.set }}
-      PYTHON: ${{ matrix.python || 'python3' }}
-      ADD_MODULES: ${{ matrix.ADD_MODULES }}
+      PY_TEST_INTERP: ${{ matrix.python || 'python3' }}
+      ADD_MODULES: ${{ matrix.ADD_MODULES || '' }}
       JUNIT_PREFIX: ${{ matrix.name }}_${{ matrix.os }}_
       SKIP_CAPUTLOG_TESTS: ${{ matrix.skip_caputlog }}
 
