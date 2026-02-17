@@ -45,7 +45,10 @@ extern "C" {
 #include "tsHash.h"
 #include "aitTypes.h"
 
-#ifdef USE_PCRE
+#ifdef USE_PCRE2
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>
+#elif defined(USE_PCRE)
 #include <pcre.h>
 #else
 
@@ -128,7 +131,11 @@ public:
 	const char* group;
 	int level;
 	ASMEMBERPVT asmemberpvt;
-#ifdef USE_PCRE
+#ifdef USE_PCRE2
+	pcre2_code* pat_buff;
+	pcre2_match_data* match_data;
+	int substrings;
+#elif defined(USE_PCRE)
 	pcre* pat_buff;
 	int substrings;
 	int ovecsize;

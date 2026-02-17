@@ -13,13 +13,24 @@
 #######################################################################
 
 # Use Perl compatible regular expressions (PCRE) instead of basic regex
+# PCRE2 is preferred over PCRE
+#USE_PCRE2=YES
 #USE_PCRE=YES
+
+# For PCRE2 on Linux
+#    requires package libpcre2-dev for compiling
+#    requires package libpcre2-8-0 for running the Gateway
 
 # For PCRE on Linux
 #    requires package pcre-devel (or libpcre3-dev) for compiling
 #    requires package pcre (or libpcre3) for running the Gateway
 
 ifeq ($(OS_CLASS),WIN32)
+
+    # For PCRE2 on Windows
+    #    install libraries and includes (e.g. from MSYS2)
+    #    and set the install location here
+    #PCRE2_DIR=C:/Pcre2
 
     # For PCRE on Windows
     #    install libraries and includes from

@@ -25,7 +25,20 @@ ifeq ($(CMPLR_CLASS),msvc)
   USR_LDFLAGS_WIN32 += /SUBSYSTEM:CONSOLE
 endif
 
-ifeq ($(USE_PCRE),YES)
+ifeq ($(USE_PCRE2),YES)
+  USR_CXXFLAGS += -DUSE_PCRE2
+  ifeq ($(OS_CLASS),WIN32)
+    ifdef PCRE2_DIR
+      USR_INCLUDES += -I$(PCRE2_DIR)/include
+      PROD_LIBS += pcre2-8
+      pcre2-8_DIR = $(PCRE2_DIR)/lib
+    else
+      USR_SYS_LIBS += pcre2-8
+    endif
+  else
+    USR_SYS_LIBS += pcre2-8
+  endif
+else ifeq ($(USE_PCRE),YES)
   USR_CXXFLAGS += -DUSE_PCRE
   ifeq ($(OS_CLASS),WIN32)
     ifneq (,$(wildcard $(PCRE_DIR)/inc/*.h))

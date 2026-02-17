@@ -22,10 +22,17 @@ TAPFILES = $(PYTESTS:.py=.tap)
 TESTFILES += test.db
 TESTFILES += access.txt
 
-# Which pvlist.txt file depends on USE_PCRE
+# Which pvlist.txt file depends on USE_PCRE or USE_PCRE2
+USE_PCRE2 ?= NO
 USE_PCRE ?= NO
-PVLIST_YES = pvlist_pcre.txt
-PVLIST_NO = pvlist_bre.txt
+
+ifeq ($(USE_PCRE2),YES)
+  PVLIST_FILE = pvlist_pcre.txt
+else ifeq ($(USE_PCRE),YES)
+  PVLIST_FILE = pvlist_pcre.txt
+else
+  PVLIST_FILE = pvlist_bre.txt
+endif
 
 CLEANS += *.pyc $(TESTFILES) pvlist.txt gateway.* *.tap
 
@@ -60,8 +67,8 @@ testfiles: $(TESTFILES:%=../%)
 	$(ECHO) "Copying test files $(TESTFILES)"
 	@$(CP) $^ .
 
-pvlist.txt: ../$(PVLIST_$(USE_PCRE))
-	$(ECHO) "Copying $< to $@ (USE_PCRE: $(USE_PCRE))"
+pvlist.txt: ../$(PVLIST_FILE)
+	$(ECHO) "Copying $< to $@ (USE_PCRE2: $(USE_PCRE2), USE_PCRE: $(USE_PCRE))"
 	@$(CP) $< $@
 
 endif
