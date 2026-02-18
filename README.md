@@ -1,6 +1,6 @@
 <a target="_blank" href="http://semver.org">![Version][badge.version]</a>
 <a target="_blank" href="https://github.com/epics-extensions/ca-gateway/actions/workflows/ci-scripts-build.yml">![GitHub Actions status][badge.gha]</a>
-<a target="_blank" href="https://www.codacy.com/gh/epics-extensions/ca-gateway">![Codacy grade][badge.codacy]</a>
+<a target="_blank" href="https://app.codacy.com/gh/epics-extensions/ca-gateway/dashboard">![Codacy grade][badge.codacy]</a>
 
 
 # Channel Access PV Gateway
