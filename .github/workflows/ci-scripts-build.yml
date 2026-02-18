@@ -34,8 +34,6 @@ jobs:
       EXTRA: ${{ matrix.extra }}
       TEST: ${{ matrix.test }}
       SET: ${{ matrix.set }}
-      JUNIT_PREFIX: ${{ matrix.name }}_${{ matrix.os }}_
-      SKIP_CAPUTLOG_TESTS: ${{ matrix.skip_caputlog }}
 
     strategy:
       fail-fast: false
@@ -49,30 +47,30 @@ jobs:
             set: "base-7.0"
             name: "B-7.0 Ub-24 gcc-13 C++11, static"
 
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             cmp: gcc
             configuration: default
             set: "base-7.0"
-            name: "B-7.0 Ub-24 gcc-13"
+            name: "B-7.0 Ub-22 gcc-11"
 
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             cmp: gcc
             configuration: static
             set: "base-7.0"
-            name: "B-7.0 Ub-24 gcc-13, static"
+            name: "B-7.0 Ub-22 gcc-11, static"
 
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             cmp: clang
             configuration: default
             set: "base-7.0"
-            name: "B-7.0 Ub-24 clang-18"
+            name: "B-7.0 Ub-22 clang-11"
 
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             cmp: clang
             configuration: default
             extra: "CMD_CXXFLAGS=-std=c++11"
             set: "base-7.0"
-            name: "B-7.0 Ub-24 clang-18 C++11"
+            name: "B-7.0 Ub-22 clang-11 C++11"
 
 # MacOS and Windows builds need regex library
 #          - os: macos-latest
@@ -93,29 +91,29 @@ jobs:
 #            set: "base-7.0"
 #            name: "B-7.0 Win-22 MSC-22, debug"
 
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             cmp: gcc
             configuration: default
             set: "base-3.15"
-            name: "B-3.15 Ub-24 gcc-13"
+            name: "B-3.15 Ub-22 gcc-11"
 
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             cmp: gcc
             configuration: static
             set: "base-3.15"
-            name: "B-3.15 Ub-24 gcc-13, static"
+            name: "B-3.15 Ub-22 gcc-11, static"
 
-          - name: "B-3.14 Ub-24 gcc-13"
-            os: ubuntu-24.04
+          - os: ubuntu-22.04
             cmp: gcc
             configuration: default
             set: "base-3.14"
+            name: "B-3.14 Ub-22 gcc-11"
 
-          - name: "B-3.14 Ub-24 gcc-13, static"
-            os: ubuntu-24.04
+          - os: ubuntu-22.04
             cmp: gcc
             configuration: static
             set: "base-3.14"
+            name: "B-3.14 Ub-22 gcc-11, static"
 
     steps:
     - uses: actions/checkout@v4
@@ -126,36 +124,12 @@ jobs:
     - name: "apt-get install"
       run: |
         sudo apt-get update
-        sudo apt-get -y install qemu-system-x86 g++-mingw-w64-x86-64 gdb
+        sudo apt-get -y install qemu-system-x86 g++-mingw-w64-x86-64 gdb python3-all-dbg
+        sudo pip install pyepics nose2
       if: runner.os == 'Linux'
-    - name: Install Python test dependencies with pip
-      run: |
-        pip install --break-system-packages pytest pytest-tap pyepics caproto
-      if: matrix.os == 'ubuntu-24.04'
-    - name: Install Python test dependencies with pip
-      run: |
-        pip install pytest pytest-tap pyepics caproto
-      if: matrix.os == 'ubuntu-22.04'
     - name: Prepare and compile dependencies
       run: python .ci/cue.py prepare
     - name: Build main module
       run: python .ci/cue.py build
     - name: Run main module tests
       run: python .ci/cue.py test
-    - name: Collect and show test results
-      run: python .ci/cue.py test-results
-    - name: Generate test summary
-      uses: test-summary/action@v2
-      with:
-        paths: |
-          testTop/pyTestsApp/O.*/*.xml
-      if: always()
-    - name: Upload test artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.name }} - test results
-        path: |
-          testTop/pyTestsApp/O.*/*.tap
-          testTop/pyTestsApp/O.*/*.xml
-          test-summary.md
-      if: always()
