@@ -176,6 +176,9 @@ volatile unsigned long gateServer::quitserver_flag = 0;
 
 void gateServer::mainLoop(void)
 {
+<<<<<<< HEAD
+	int not_done=1;
+=======
     bool finalize = false;
 
 #if defined(RATE_STATS) || defined(CAS_DIAGNOSTICS)
@@ -183,6 +186,7 @@ void gateServer::mainLoop(void)
 	epicsTimerQueueActive *pQueue = NULL;
 #endif
 
+>>>>>>> d338ef8 (test: fix failures with EPICS 3.14)
 	// KE: ca_poll should be called every 100 ms
 	// fdManager::process can block in select for delay time
 	// so delay must be less than 100 ms to insure ca_poll gets called
@@ -246,8 +250,14 @@ void gateServer::mainLoop(void)
 #if defined(RATE_STATS) || defined(CAS_DIAGNOSTICS)
 	// Start a default timer queue (true to use shared queue, false to
 	// have a private one)
+<<<<<<< HEAD
+	epicsTimerQueueActive &queue =
+	  epicsTimerQueueActive::allocate(true);
+	gateRateStatsTimer *statTimer = new gateRateStatsTimer(queue,
+=======
 	pQueue = &epicsTimerQueueActive::allocate(true);
 	statTimer = new gateRateStatsTimer(*pQueue,
+>>>>>>> d338ef8 (test: fix failures with EPICS 3.14)
 	  RATE_STATS_INTERVAL, this);
 	if(statTimer) {
 	  // Call the expire routine to initialize it
@@ -267,7 +277,11 @@ void gateServer::mainLoop(void)
 #endif
 
 	// Main loop
+<<<<<<< HEAD
+	while(not_done)	{
+=======
         while (!finalize) {
+>>>>>>> d338ef8 (test: fix failures with EPICS 3.14)
 #if defined(RATE_STATS) || defined(CAS_DIAGNOSTICS)
 		loop_count++;
 #endif
@@ -362,9 +376,14 @@ void gateServer::mainLoop(void)
 			quit_flag=0;
 			setStat(statQuitFlag,0ul);
 			// return here will delete gateServer
+<<<<<<< HEAD
+			return;
+		}
+=======
                         finalize = true;
                         continue;
                 }
+>>>>>>> d338ef8 (test: fix failures with EPICS 3.14)
 		if(quitserver_flag) {
 			printf("%s Stopping server (quitServerFlag was set to 1)\n",
 			  timeStamp());
@@ -377,6 +396,16 @@ void gateServer::mainLoop(void)
 				if(parentPid >= 0) {
 					kill(parentPid,SIGTERM);
 				} else {
+<<<<<<< HEAD
+					exit(0);
+				}
+#endif
+			} else {
+				// Doesn't have a server, just quit
+				exit(0);
+			}
+		}
+=======
                                     finalize = true;
                                 }
 #endif
@@ -387,6 +416,7 @@ void gateServer::mainLoop(void)
                         if (finalize)
                             continue;
                 }
+>>>>>>> d338ef8 (test: fix failures with EPICS 3.14)
 
 #ifdef __linux__
 # ifndef USE_LINUX_PROC_FOR_CPU
@@ -394,6 +424,10 @@ void gateServer::mainLoop(void)
 		mainClock=clock();
 # endif
 #endif
+<<<<<<< HEAD
+
+	}
+=======
         }
 
 #if defined(RATE_STATS) || defined(CAS_DIAGNOSTICS)
@@ -403,6 +437,7 @@ void gateServer::mainLoop(void)
 	}
 	if(pQueue) pQueue->release();
 #endif
+>>>>>>> d338ef8 (test: fix failures with EPICS 3.14)
 }
 
 // This is a wrapper around caServer::generateBeaconAnomaly.  Generate

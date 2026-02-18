@@ -60,8 +60,6 @@
 
 #ifdef USE_PCRE2
 #define GATE_REGEX_LIB "PCRE2"
-#elif defined(USE_PCRE)
-#define GATE_REGEX_LIB "PCRE"
 #else
 #define GATE_REGEX_LIB "BRE"
 #endif

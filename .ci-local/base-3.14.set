@@ -1,4 +1,8 @@
+<<<<<<< HEAD
+BASE=3.14
+=======
 MODULES=caPutLog
 
 BASE=3.14
 CAPUTLOG=R4.0
+>>>>>>> d338ef8 (test: fix failures with EPICS 3.14)
