@@ -183,10 +183,6 @@ class gateRateStatsTimer : public epicsTimerNotify
     virtual expireStatus expire(const epicsTime &curTime);
     void start() { timer.start(*this,interval); }
     void stop() { timer.cancel(); }
-<<<<<<< HEAD
-  protected:
-=======
->>>>>>> d338ef8 (test: fix failures with EPICS 3.14)
     virtual ~gateRateStatsTimer() { timer.destroy(); }
   private:
     double interval;

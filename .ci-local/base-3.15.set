@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-=======
 MODULES=caPutLog
 
->>>>>>> d338ef8 (test: fix failures with EPICS 3.14)
 BASE=3.15

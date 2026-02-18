@@ -1,12 +1,4 @@
-<<<<<<< HEAD
-MODULES=pcas
-
-BASE=7.0
-BASE_RECURSIVE=NO
-=======
 MODULES=pcas caPutLog
 
 BASE=7.0
 BASE_RECURSIVE=NO
-
->>>>>>> d338ef8 (test: fix failures with EPICS 3.14)
