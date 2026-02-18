@@ -6,7 +6,7 @@ from typing import List, Optional
 
 import pytest
 
-from . import conftest
+from . import config, conftest
 
 try:
     from . import util
@@ -24,9 +24,17 @@ logger = logging.getLogger(__name__)
 # Keep the header with regex rules separate; \\ is a pain to deal with in
 # strings.
 #
-# NOTE: this pvlist is done in BRE regex format and not PCRE and assumes
-# the gateway was built with it.
-pvlist_header = r"""
+# NOTE: this pvlist is done in either BRE or PCRE regex format depending
+# on the regex library the gateway was built with.
+if config.use_pcre:
+    pvlist_header = r"""
+EVALUATION ORDER ALLOW, DENY
+gateway:(.*)    ALIAS ioc:\1
+ioc:.*          DENY
+gwtest:.*       ALLOW
+"""
+else:
+    pvlist_header = r"""
 EVALUATION ORDER ALLOW, DENY
 gateway:\(.*\)  ALIAS ioc:\1
 ioc:.*          DENY
