@@ -17,7 +17,7 @@ def _boolean_option(value: Optional[str]) -> bool:
     try:
         return int(value) > 0
     except (TypeError, ValueError):
-        return value.lower() in {"yes", "y", "true"}
+        return str(value).lower() in {"yes", "y", "true"}
 
 
 libca_so = os.path.join(

@@ -245,18 +245,19 @@ static int gdd_to_log_string(char *pbuf, size_t buflen, const gdd *gddVal)
     if (gddVal->dimension() > 0) {
         // Handle array
         size_t n = gddVal->getDataSizeElements();
-        size_t written = epicsSnprintf(pbuf, buflen, "[");
+        size_t written = 0;
         int type = gddGetOurType(gddVal);
 
-        for (size_t i = 0; i < n && written < buflen; ++i) {
+        int l = epicsSnprintf(pbuf, buflen, "[");
+        if (l > 0) written += l;
+
+        for (size_t i = 0; i < n && written < buflen - 1; ++i) {
             char elem_buf[64];
             VALUE v;
             memset(&v, 0, sizeof(VALUE));
 
             // Extract element
-            if (type == DBFLD::D_CHAR) {
-                v.v_uint8 = ((aitUint8*)gddVal->dataPointer())[i];
-            } else if (type == DBFLD::D_UCHAR) {
+            if (type == DBFLD::D_CHAR || type == DBFLD::D_UCHAR) {
                 v.v_uint8 = ((aitUint8*)gddVal->dataPointer())[i];
             } else if (type == DBFLD::D_SHORT) {
                 v.v_int16 = ((aitInt16*)gddVal->dataPointer())[i];
@@ -272,16 +273,20 @@ static int gdd_to_log_string(char *pbuf, size_t buflen, const gdd *gddVal)
                 v.v_double = ((aitFloat64*)gddVal->dataPointer())[i];
             } else {
                 // String or other
-                return epicsSnprintf(pbuf, buflen, "Array of unsupported type");
+                int l2 = epicsSnprintf(pbuf + written, buflen - written, "Array of unsupported type");
+                if (l2 > 0) written += l2;
+                break;
             }
 
             VALUE_to_string(elem_buf, sizeof(elem_buf), &v, type);
-            written += epicsSnprintf(pbuf + written, buflen - written, "%s%s", (i == 0 ? "" : ", "), elem_buf);
+            int l2 = epicsSnprintf(pbuf + written, buflen - written, "%s%s", (i == 0 ? "" : ", "), elem_buf);
+            if (l2 > 0) written += l2;
+            if (written >= buflen) break;
         }
         if (written < buflen) {
-            written += epicsSnprintf(pbuf + written, buflen - written, "]");
+            epicsSnprintf(pbuf + written, buflen - written, "]");
         }
-        return written;
+        return (int)written;
     } else {
         // Scalar
         VALUE v;
