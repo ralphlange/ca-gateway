@@ -4,4 +4,4 @@ BASE=7.0
 BASE_RECURSIVE=NO
 
 PCRE=master
-PCRE_REPOURL=https://github.com/epics-modules/pcre
+PCRE_REP=https://github.com/epics-modules/pcre

@@ -21,11 +21,10 @@ PVLIST_NO = pvlist_bre.txt
 
 PYTEST_OPTIONS ?= -v
 JUNIT_PREFIX ?= gateway_tests_
-ifeq ($(PY_TEST_INTERP),)
-PY_TEST_INTERP = python3
-endif
 
 CLEANS += *.pyc $(TEST_FILES) pvlist.txt gateway.* *.tap
+
+PY_TEST_INTERP ?= python3
 
 include $(TOP)/configure/RULES
 #----------------------------------------

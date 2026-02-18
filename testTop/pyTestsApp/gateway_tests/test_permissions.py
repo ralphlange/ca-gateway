@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 # Keep the header with regex rules separate; \\ is a pain to deal with in
 # strings.
 #
-# Use the correct pvlist header based on whether PCRE is enabled
+# NOTE: this pvlist is done in BRE regex format and not PCRE and assumes
+# the gateway was built with it.
 if config.use_pcre:
     pvlist_header = r"""
 EVALUATION ORDER ALLOW, DENY

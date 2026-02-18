@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
-import sys
 from typing import Optional
 
 MODULE_PATH = pathlib.Path(__file__).parent.resolve()
@@ -17,28 +16,21 @@ def _boolean_option(value: Optional[str]) -> bool:
 
     try:
         return int(value) > 0
-    except (ValueError, TypeError):
+    except TypeError:
         return value.lower() in {"yes", "y", "true"}
 
 
-is_windows = os.name == "nt"
-is_macos = sys.platform == "darwin"
-
+libca_so = os.path.join(
+    os.environ["EPICS_BASE"], "lib", os.environ["EPICS_HOST_ARCH"], "libca.so"
+)
+libca_dll = os.path.join(
+    os.environ["EPICS_BASE"], "bin", os.environ["EPICS_HOST_ARCH"], "ca.dll"
+)
 if "PYEPICS_LIBCA" not in os.environ:
-    if is_windows:
-        libca = os.path.join(
-            os.environ["EPICS_BASE"], "bin", os.environ["EPICS_HOST_ARCH"], "ca.dll"
-        )
-    elif is_macos:
-        libca = os.path.join(
-            os.environ["EPICS_BASE"], "lib", os.environ["EPICS_HOST_ARCH"], "libca.dylib"
-        )
-    else:
-        libca = os.path.join(
-            os.environ["EPICS_BASE"], "lib", os.environ["EPICS_HOST_ARCH"], "libca.so"
-        )
-    if os.path.exists(libca):
-        os.environ["PYEPICS_LIBCA"] = libca
+    if os.path.exists(libca_so):
+        os.environ["PYEPICS_LIBCA"] = libca_so
+    elif os.path.exists(libca_dll):
+        os.environ["PYEPICS_LIBCA"] = libca_dll
 
 # Default Channel Access ports to use:
 default_ioc_port = 62782
@@ -63,7 +55,7 @@ if not host_arch:
 gateway_executable = os.path.join(
     os.environ.get("GATEWAY_ROOT", "."), "bin", host_arch, "gateway"
 )
-if is_windows and not gateway_executable.endswith(".exe"):
+if not os.path.exists(gateway_executable) and os.path.exists(gateway_executable + ".exe"):
     gateway_executable += ".exe"
 
 
@@ -82,13 +74,13 @@ def _get_softioc(host_arch: str) -> str:
     else:
         ioc_executable = None
 
-    if ioc_executable and is_windows and not ioc_executable.endswith(".exe"):
-        ioc_executable += ".exe"
-
-    if not ioc_executable or not os.path.exists(ioc_executable):
+    if not ioc_executable or (not os.path.exists(ioc_executable) and not os.path.exists(ioc_executable + ".exe")):
         ioc_executable = shutil.which("softIoc")
         if not ioc_executable:
             raise RuntimeError(f"softIoc path {ioc_executable} does not exist")
+
+    if not os.path.exists(ioc_executable) and os.path.exists(ioc_executable + ".exe"):
+        ioc_executable += ".exe"
     return ioc_executable
 
 
