@@ -16,8 +16,8 @@ def _boolean_option(value: Optional[str]) -> bool:
 
     try:
         return int(value) > 0
-    except TypeError:
-        return value.lower() in {"yes", "y", "true"}
+    except (TypeError, ValueError):
+        return str(value).lower() in {"yes", "y", "true"}
 
 
 libca_so = os.path.join(
@@ -33,7 +33,9 @@ default_gateway_port = 62783
 default_putlog_port = 45635
 default_access = os.environ.get("GATEWAY_ACCESS", str(WORKING_DIRECTORY / "access.txt"))
 
-use_pcre = _boolean_option(os.environ.get("USE_PCRE", ""))
+use_pcre = _boolean_option(os.environ.get("USE_PCRE2", "")) or _boolean_option(
+    os.environ.get("USE_PCRE", "")
+)
 default_pvlist = os.environ.get("GATEWAY_PVLIST", str(WORKING_DIRECTORY / "pvlist.txt"))
 test_ioc_db = os.environ.get("TEST_DB", str(WORKING_DIRECTORY / "test.db"))
 

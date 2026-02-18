@@ -6,7 +6,7 @@ from typing import List, Optional
 
 import pytest
 
-from . import conftest
+from . import config, conftest
 
 try:
     from . import util
@@ -24,12 +24,18 @@ logger = logging.getLogger(__name__)
 # Keep the header with regex rules separate; \\ is a pain to deal with in
 # strings.
 #
-# NOTE: this pvlist is done in BRE regex format and not PCRE and assumes
-# the gateway was built with it.
-pvlist_header = r"""
+# NOTE: this pvlist is done in either BRE or PCRE regex format depending
+# on the regex library the gateway was built with.
+if config.use_pcre:
+    pvlist_header = r"""
+EVALUATION ORDER ALLOW, DENY
+gateway:(.*)  ALIAS ioc:\1
+gwtest:.*     ALLOW
+"""
+else:
+    pvlist_header = r"""
 EVALUATION ORDER ALLOW, DENY
 gateway:\(.*\)  ALIAS ioc:\1
-ioc:.*          DENY
 gwtest:.*       ALLOW
 """
 
@@ -194,7 +200,6 @@ def test_permissions_by_user_aliased(
     [
         pytest.param(
             """
-            EVALUATION ORDER ALLOW, DENY
             ioc:HUGO:ENUM  ALLOW RWMFX
             ioc:HUGO:AI    ALLOW
             """,
@@ -213,7 +218,7 @@ def test_permissions_by_user_aliased(
 def test_permissions_by_user_direct(
     access_contents: str, pvlist_contents: str, access_checks: List[AccessCheck]
 ):
-    # pvlist_contents = with_pvlist_header(pvlist_contents)
+    pvlist_contents = with_pvlist_header(pvlist_contents)
     with conftest.custom_environment(access_contents, pvlist_contents):
         with conftest.gateway_channel_access_env():
             for access_check in access_checks:
@@ -247,7 +252,6 @@ def test_permissions_by_user_direct(
     [
         pytest.param(
             """\
-            EVALUATION ORDER ALLOW, DENY
             ioc:HUGO:ENUM  DENY
             ioc:HUGO:AI    ALLOW
             """,
@@ -256,7 +260,6 @@ def test_permissions_by_user_direct(
         ),
         pytest.param(
             """\
-            EVALUATION ORDER ALLOW, DENY
             ioc:HUGO:ENUM  DENY FROM localhost
             ioc:HUGO:AI    ALLOW
             """,
@@ -265,7 +268,6 @@ def test_permissions_by_user_direct(
         ),
         pytest.param(
             """\
-            EVALUATION ORDER ALLOW, DENY
             ioc:.*            ALLOW
             ioc:HUGO:ENUM      DENY FROM example.com
             """,
@@ -281,7 +283,7 @@ def test_permissions_with_deny(
     deny_pv = "ioc:HUGO:ENUM"
     host_to_check = "localhost"
 
-    # pvlist_contents = with_pvlist_header(pvlist_contents)
+    pvlist_contents = with_pvlist_header(pvlist_contents)
     with conftest.custom_environment(access_contents, pvlist_contents):
         for pvname, should_exist in [(allow_pv, True), (deny_pv, localhost_allow)]:
             # Baseline using direct IOC communication
