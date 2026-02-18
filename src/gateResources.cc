@@ -236,6 +236,61 @@ static int VALUE_to_string(char *pbuf, size_t buflen, const VALUE *pval, short d
     }
 }
 
+/*
+ * gdd_to_log_string(): convert gdd to string for logging
+ * Handles arrays/waveforms correctly.
+ */
+static int gdd_to_log_string(char *pbuf, size_t buflen, const gdd *gddVal)
+{
+    if (gddVal->dimension() > 0) {
+        // Handle array
+        size_t n = gddVal->getDataSizeElements();
+        size_t written = epicsSnprintf(pbuf, buflen, "[");
+        int type = gddGetOurType(gddVal);
+
+        for (size_t i = 0; i < n && written < buflen; ++i) {
+            char elem_buf[64];
+            VALUE v;
+            memset(&v, 0, sizeof(VALUE));
+
+            // Extract element
+            if (type == DBFLD::D_CHAR) {
+                v.v_uint8 = ((aitUint8*)gddVal->dataPointer())[i];
+            } else if (type == DBFLD::D_UCHAR) {
+                v.v_uint8 = ((aitUint8*)gddVal->dataPointer())[i];
+            } else if (type == DBFLD::D_SHORT) {
+                v.v_int16 = ((aitInt16*)gddVal->dataPointer())[i];
+            } else if (type == DBFLD::D_USHORT) {
+                v.v_uint16 = ((aitUint16*)gddVal->dataPointer())[i];
+            } else if (type == DBFLD::D_LONG) {
+                v.v_int32 = ((aitInt32*)gddVal->dataPointer())[i];
+            } else if (type == DBFLD::D_ULONG) {
+                v.v_uint32 = ((aitUint32*)gddVal->dataPointer())[i];
+            } else if (type == DBFLD::D_FLOAT) {
+                v.v_float = ((aitFloat32*)gddVal->dataPointer())[i];
+            } else if (type == DBFLD::D_DOUBLE) {
+                v.v_double = ((aitFloat64*)gddVal->dataPointer())[i];
+            } else {
+                // String or other
+                return epicsSnprintf(pbuf, buflen, "Array of unsupported type");
+            }
+
+            VALUE_to_string(elem_buf, sizeof(elem_buf), &v, type);
+            written += epicsSnprintf(pbuf + written, buflen - written, "%s%s", (i == 0 ? "" : ", "), elem_buf);
+        }
+        if (written < buflen) {
+            written += epicsSnprintf(pbuf + written, buflen - written, "]");
+        }
+        return written;
+    } else {
+        // Scalar
+        VALUE v;
+        int type = gddGetOurType(gddVal);
+        gddToVALUE(gddVal, type, &v);
+        return VALUE_to_string(pbuf, buflen, &v, type);
+    }
+}
+
 #if 0
 static char *debugVALUEString(const VALUE *v, int dbfld_dbrtype, char *buffer, size_t buflen)
 {
@@ -243,64 +298,6 @@ static char *debugVALUEString(const VALUE *v, int dbfld_dbrtype, char *buffer, s
 	return buffer;
 }
 #endif
-
-/*
- * gdd_to_log_string(): convert gdd to string (handling arrays)
- */
-static int gdd_to_log_string(char *pbuf, size_t buflen, const gdd *pdd)
-{
-    if (!pdd || pdd->primitiveType() == aitEnumInvalid) {
-        return epicsSnprintf(pbuf, buflen, "?");
-    }
-
-    unsigned int n = pdd->getDataSizeElements();
-    int dbfld_type = gddGetOurType(pdd);
-
-    if (n > 1) {
-        size_t used = epicsSnprintf(pbuf, buflen, "[");
-        for (unsigned int i = 0; i < n && used < buflen - 1; ++i) {
-            VALUE val;
-            memset(&val, 0, sizeof(VALUE));
-
-            switch (dbfld_type) {
-                case DBFLD::D_CHAR:
-                    val.v_int8 = ((const aitInt8*)pdd->dataPointer())[i]; break;
-                case DBFLD::D_UCHAR:
-                    val.v_uint8 = ((const aitUint8*)pdd->dataPointer())[i]; break;
-                case DBFLD::D_SHORT:
-                    val.v_int16 = ((const aitInt16*)pdd->dataPointer())[i]; break;
-                case DBFLD::D_USHORT:
-                case DBFLD::D_ENUM:
-                    val.v_uint16 = ((const aitUint16*)pdd->dataPointer())[i]; break;
-                case DBFLD::D_LONG:
-                    val.v_int32 = ((const aitInt32*)pdd->dataPointer())[i]; break;
-                case DBFLD::D_ULONG:
-                    val.v_uint32 = ((const aitUint32*)pdd->dataPointer())[i]; break;
-                case DBFLD::D_FLOAT:
-                    val.v_float = ((const aitFloat32*)pdd->dataPointer())[i]; break;
-                case DBFLD::D_DOUBLE:
-                    val.v_double = ((const aitFloat64*)pdd->dataPointer())[i]; break;
-                case DBFLD::D_STRING:
-                default:
-                    strncpy(val.v_string, ((const aitFixedString*)pdd->dataPointer())[i].fixed_string, sizeof(val.v_string));
-                    val.v_string[sizeof(val.v_string)-1] = 0;
-                    break;
-            }
-
-            char item[64];
-            VALUE_to_string(item, sizeof(item), &val, dbfld_type);
-            used += epicsSnprintf(pbuf + used, buflen - used, "%s%s", (i == 0 ? "" : ", "), item);
-        }
-        if (used < buflen - 1) {
-            used += epicsSnprintf(pbuf + used, buflen - used, "]");
-        }
-        return (int)used;
-    } else {
-        VALUE val;
-        gddToVALUE(pdd, dbfld_type, &val);
-        return VALUE_to_string(pbuf, buflen, &val, dbfld_type);
-    }
-}
 
 #endif // WITH_CAPUTLOG
 
@@ -469,9 +466,17 @@ void gateResources::putLog(
        const gdd       *       new_value       )
 {
        if(fp) {
-               char    acOldVal[1024], acNewVal[1024];
-               gdd_to_log_string( acOldVal, sizeof(acOldVal), old_value );
-               gdd_to_log_string( acNewVal, sizeof(acNewVal), new_value );
+               char    acOldVal[1024],   acNewVal[1024];
+               if ( old_value == NULL )
+               {
+                       acOldVal[0] = '?';
+                       acOldVal[1] = '\0';
+               }
+               else
+               {
+                       gdd_to_log_string( acOldVal, 1024, old_value );
+               }
+               gdd_to_log_string( acNewVal, 1024, new_value );
                fprintf(fp,"%s %s@%s %s %s old=%s\n",
                  timeStamp(),
                  user?user:"Unknown",
