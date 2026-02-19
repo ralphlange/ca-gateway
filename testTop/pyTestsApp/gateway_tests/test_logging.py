@@ -149,7 +149,7 @@ class CaputLog:
         pytest.param("ioc:passiveALRM", [1, 5, 10]),
         pytest.param("ioc:passiveMBBI", [1, 2]),
         pytest.param("ioc:passivelongin", [1, 2]),
-        pytest.param("ioc:bigpassivewaveform", [[1, 2, 3], [4, 5, 6]], marks=pytest.mark.xfail(reason='Unfixed bug #60')),
+        pytest.param("ioc:bigpassivewaveform", [[1, 2, 3], [4, 5, 6]]),
     ],
 )
 @pytest.mark.skipif(os.getenv("SKIP_CAPUTLOG_TESTS") == "true", reason="No caputlog support")
