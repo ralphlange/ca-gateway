@@ -236,6 +236,66 @@ static int VALUE_to_string(char *pbuf, size_t buflen, const VALUE *pval, short d
     }
 }
 
+/*
+ * gdd_to_log_string(): convert gdd to string for logging
+ * Handles arrays/waveforms correctly.
+ */
+static int gdd_to_log_string(char *pbuf, size_t buflen, const gdd *gddVal)
+{
+    if (gddVal->dimension() > 0) {
+        // Handle array
+        size_t n = gddVal->getDataSizeElements();
+        size_t written = 0;
+        int type = gddGetOurType(gddVal);
+
+        int l = epicsSnprintf(pbuf, buflen, "[");
+        if (l > 0) written += l;
+
+        for (size_t i = 0; i < n && written < buflen - 1; ++i) {
+            char elem_buf[64];
+            VALUE v;
+            memset(&v, 0, sizeof(VALUE));
+
+            // Extract element
+            if (type == DBFLD::D_CHAR || type == DBFLD::D_UCHAR) {
+                v.v_uint8 = (reinterpret_cast<const aitUint8 *>(gddVal->dataPointer()))[i];
+            } else if (type == DBFLD::D_SHORT) {
+                v.v_int16 = (reinterpret_cast<const aitInt16 *>(gddVal->dataPointer()))[i];
+            } else if (type == DBFLD::D_USHORT) {
+                v.v_uint16 = (reinterpret_cast<const aitUint16 *>(gddVal->dataPointer()))[i];
+            } else if (type == DBFLD::D_LONG) {
+                v.v_int32 = (reinterpret_cast<const aitInt32 *>(gddVal->dataPointer()))[i];
+            } else if (type == DBFLD::D_ULONG) {
+                v.v_uint32 = (reinterpret_cast<const aitUint32 *>(gddVal->dataPointer()))[i];
+            } else if (type == DBFLD::D_FLOAT) {
+                v.v_float = (reinterpret_cast<const aitFloat32 *>(gddVal->dataPointer()))[i];
+            } else if (type == DBFLD::D_DOUBLE) {
+                v.v_double = (reinterpret_cast<const aitFloat64 *>(gddVal->dataPointer()))[i];
+            } else {
+                // String or other
+                int l2 = epicsSnprintf(pbuf + written, buflen - written, "Array of unsupported type");
+                if (l2 > 0) written += l2;
+                break;
+            }
+
+            VALUE_to_string(elem_buf, sizeof(elem_buf), &v, type);
+            int l2 = epicsSnprintf(pbuf + written, buflen - written, "%s%s", (i == 0 ? "" : ", "), elem_buf);
+            if (l2 > 0) written += l2;
+            if (written >= buflen) break;
+        }
+        if (written < buflen) {
+            epicsSnprintf(pbuf + written, buflen - written, "]");
+        }
+        return (int)written;
+    } else {
+        // Scalar
+        VALUE v;
+        int type = gddGetOurType(gddVal);
+        gddToVALUE(gddVal, type, &v);
+        return VALUE_to_string(pbuf, buflen, &v, type);
+    }
+}
+
 #if 0
 static char *debugVALUEString(const VALUE *v, int dbfld_dbrtype, char *buffer, size_t buflen)
 {
@@ -247,6 +307,7 @@ static char *debugVALUEString(const VALUE *v, int dbfld_dbrtype, char *buffer, s
 #endif // WITH_CAPUTLOG
 
 gateResources::gateResources(void)
+    : cacheMode(true)
 {
 	as = NULL;
     if(access(GATE_PV_ACCESS_FILE,F_OK)==0)
@@ -411,8 +472,7 @@ void gateResources::putLog(
        const gdd       *       new_value       )
 {
        if(fp) {
-               VALUE   oldVal,                 newVal;
-               char    acOldVal[20],   acNewVal[20];
+               char    acOldVal[1024],   acNewVal[1024];
                if ( old_value == NULL )
                {
                        acOldVal[0] = '?';
@@ -420,11 +480,9 @@ void gateResources::putLog(
                }
                else
                {
-                       gddToVALUE( old_value, gddGetOurType(old_value), &oldVal );
-                       VALUE_to_string( acOldVal, 20, &oldVal, gddGetOurType(old_value) );
+                       gdd_to_log_string( acOldVal, 1024, old_value );
                }
-               gddToVALUE( new_value, gddGetOurType(new_value), &newVal );
-               VALUE_to_string( acNewVal, 20, &newVal, gddGetOurType(new_value) );
+               gdd_to_log_string( acNewVal, 1024, new_value );
                fprintf(fp,"%s %s@%s %s %s old=%s\n",
                  timeStamp(),
                  user?user:"Unknown",
