@@ -6,7 +6,7 @@ from typing import List, Optional
 
 import pytest
 
-from . import conftest
+from . import config, conftest
 
 try:
     from . import util
@@ -21,27 +21,6 @@ else:
 logger = logging.getLogger(__name__)
 
 
-# Keep the header with regex rules separate; \\ is a pain to deal with in
-# strings.
-#
-# NOTE: this pvlist is done in BRE regex format and not PCRE and assumes
-# the gateway was built with it.
-pvlist_header = r"""
-EVALUATION ORDER ALLOW, DENY
-gateway:\(.*\)  ALIAS ioc:\1
-ioc:.*          DENY
-gwtest:.*       ALLOW
-"""
-
-pvlist_footer = r"""
-"""
-
-
-def with_pvlist_header(pvlist_rules: str) -> str:
-    """Add on the 'standard' pvlist header to the provided rules."""
-    return "\n".join((pvlist_header, textwrap.dedent(pvlist_rules), pvlist_footer))
-
-
 @dataclasses.dataclass
 class AccessCheck:
     hostname: str
@@ -53,8 +32,7 @@ class AccessCheck:
 def check_permissions(
     access_contents: str, pvlist_contents: str, access_checks: List[AccessCheck]
 ):
-    pvlist_contents = with_pvlist_header(pvlist_contents)
-    with conftest.custom_environment(access_contents, pvlist_contents):
+    with conftest.custom_environment(access_contents, pvlist_contents, gateway_args=['-debug', '100']):
         for access_check in access_checks:
             logger.info("Testing %s", access_check)
             result = util.caget_from_host(
@@ -93,7 +71,7 @@ def check_permissions(
         pytest.param(
             """
             gateway:HUGO:ENUM  ALIAS ioc:HUGO:ENUM RWMFX
-            gateway:HUGO:AI    ALIAS ioc:HUGO:AI DEFAULT
+            gateway:HUGO:AI    ALIAS ioc:HUGO:AI
             """,
             [
                 AccessCheck("mfx-control", "gateway:HUGO:ENUM", "READ|WRITE"),
@@ -141,18 +119,12 @@ def test_permissions_by_host_aliased(
         pytest.param(
             """
             gateway:HUGO:ENUM  ALIAS ioc:HUGO:ENUM RWTESTUSERS
-            gateway:HUGO:AI    ALIAS ioc:HUGO:AI DEFAULT
+            gateway:HUGO:AI    ALIAS ioc:HUGO:AI
             """,
             [
-                AccessCheck(
-                    "mfx-control", "gateway:HUGO:ENUM", "READ|WRITE", username="usera"
-                ),
-                AccessCheck(
-                    "mfx-console", "gateway:HUGO:ENUM", "READ", username="userc"
-                ),
-                AccessCheck(
-                    "anyhost", "gateway:HUGO:ENUM", "READ|WRITE", username="userb"
-                ),
+                AccessCheck("mfx-control", "gateway:HUGO:ENUM", "READ|WRITE", username="usera"),
+                AccessCheck("mfx-console", "gateway:HUGO:ENUM", "READ", username="userc"),
+                AccessCheck("anyhost", "gateway:HUGO:ENUM", "READ|WRITE", username="userb"),
                 AccessCheck("mfx-control", "gateway:HUGO:AI", "READ", username="userc"),
                 AccessCheck("mfx-console", "gateway:HUGO:AI", "READ", username="usera"),
                 AccessCheck("anyhost", "gateway:HUGO:AI", "READ", username="usera"),
@@ -194,7 +166,6 @@ def test_permissions_by_user_aliased(
     [
         pytest.param(
             """
-            EVALUATION ORDER ALLOW, DENY
             ioc:HUGO:ENUM  ALLOW RWMFX
             ioc:HUGO:AI    ALLOW
             """,
@@ -210,20 +181,58 @@ def test_permissions_by_user_aliased(
         ),
     ],
 )
+def test_permissions_by_host_direct(
+    access_contents: str, pvlist_contents: str, access_checks: List[AccessCheck]
+):
+    check_permissions(access_contents, pvlist_contents, access_checks)
+
+
+@have_requirements
+@pytest.mark.parametrize(
+    "access_contents",
+    [
+        pytest.param(
+            """\
+            UAG(testusers) {usera,userb}
+            ASG(DEFAULT) {
+                RULE(1,READ)
+            }
+
+            ASG(RWTESTUSERS) {
+                RULE(1,READ)
+                RULE(1,WRITE,TRAPWRITE){
+                  UAG(testusers)
+                }
+            }
+            """,
+            id="minimal",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "pvlist_contents, access_checks",
+    [
+        pytest.param(
+            """
+            ioc:HUGO:ENUM  ALLOW RWTESTUSERS
+            ioc:HUGO:AI    ALLOW DEFAULT
+            """,
+            [
+                AccessCheck("mfx-control", "ioc:HUGO:ENUM", "READ|WRITE", username="usera"),
+                AccessCheck("mfx-console", "ioc:HUGO:ENUM", "READ", username="blauserc"),
+                AccessCheck("anyhost", "ioc:HUGO:ENUM", "READ|WRITE", username="userb"),
+                AccessCheck("mfx-control", "ioc:HUGO:AI", "READ", username="userc"),
+                AccessCheck("mfx-console", "ioc:HUGO:AI", "READ", username="usera"),
+                AccessCheck("anyhost", "ioc:HUGO:AI", "READ", username="usera"),
+            ],
+            id="test",
+        ),
+    ],
+)
 def test_permissions_by_user_direct(
     access_contents: str, pvlist_contents: str, access_checks: List[AccessCheck]
 ):
-    # pvlist_contents = with_pvlist_header(pvlist_contents)
-    with conftest.custom_environment(access_contents, pvlist_contents):
-        with conftest.gateway_channel_access_env():
-            for access_check in access_checks:
-                logger.info("Testing %s", access_check)
-                result = util.caget_from_host(
-                    access_check.hostname,
-                    access_check.pvname,
-                    username=access_check.username,
-                )
-                assert access_check.access == result.access, str(access_check)
+    check_permissions(access_contents, pvlist_contents, access_checks)
 
 
 @have_requirements
@@ -247,7 +256,6 @@ def test_permissions_by_user_direct(
     [
         pytest.param(
             """\
-            EVALUATION ORDER ALLOW, DENY
             ioc:HUGO:ENUM  DENY
             ioc:HUGO:AI    ALLOW
             """,
@@ -256,7 +264,6 @@ def test_permissions_by_user_direct(
         ),
         pytest.param(
             """\
-            EVALUATION ORDER ALLOW, DENY
             ioc:HUGO:ENUM  DENY FROM localhost
             ioc:HUGO:AI    ALLOW
             """,
@@ -265,7 +272,6 @@ def test_permissions_by_user_direct(
         ),
         pytest.param(
             """\
-            EVALUATION ORDER ALLOW, DENY
             ioc:.*            ALLOW
             ioc:HUGO:ENUM      DENY FROM example.com
             """,
@@ -281,7 +287,6 @@ def test_permissions_with_deny(
     deny_pv = "ioc:HUGO:ENUM"
     host_to_check = "localhost"
 
-    # pvlist_contents = with_pvlist_header(pvlist_contents)
     with conftest.custom_environment(access_contents, pvlist_contents):
         for pvname, should_exist in [(allow_pv, True), (deny_pv, localhost_allow)]:
             # Baseline using direct IOC communication
