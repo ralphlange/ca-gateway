@@ -494,9 +494,12 @@ int gateAs::readPvList(const char* lfile)
 						ch=strchr(hostname,':');
 						if(ch != NULL) hostname[ch-hostname]=0;
 
-						strncpy(pIPInput,hostname,sizeof(inbufWithIPs)-1-(inbufWithIPs-pIPInput));
-						*(pIPInput+strlen(hostname)) = ' ';
-						pIPInput = pIPInput + strlen(hostname) + 1;
+                                                strncpy(pIPInput,
+                                                        hostname,
+                                                        sizeof(inbufWithIPs) - 1
+                                                            - (pIPInput - inbufWithIPs));
+                                                *(pIPInput + strlen(hostname)) = ' ';
+                                                pIPInput = pIPInput + strlen(hostname) + 1;
 					}
 					else{
 						fprintf(stderr,"Error in PV list file (line %d): "
