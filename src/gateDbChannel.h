@@ -2,7 +2,10 @@
 #define GATE_DB_CHANNEL_H
 #include "dbChannel.h"
 #include "GateCache.h"
-struct dbChannelGate : public dbChannel {
+#include <memory>
+
+struct dbChannelGate {
+    dbChannel chan;
     std::shared_ptr<GateCacheEntry> cacheEntry;
 };
 #endif

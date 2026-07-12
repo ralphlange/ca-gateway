@@ -1,3 +1,4 @@
+#include "gate_compat.h"
 /*************************************************************************\
 * Copyright (c) 2016 Michael Davidsaver
 * Copyright (c) 2015 Brookhaven Science Assoc. as operator of Brookhaven

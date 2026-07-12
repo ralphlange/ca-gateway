@@ -1,14 +1,11 @@
 #include <iocsh.h>
 #include <epicsExit.h>
 #include <epicsThread.h>
-#include <iostream>
-#include <fstream>
+#include "rsrvIocRegister.h"
 #include "GateCAClient.h"
-#include "GateCache.h"
 #include "GateConfig.h"
 
 extern "C" {
-void GateAsRegisterCommands();
 void rsrv_register_server();
 
 static const iocshArg createClientArg0 = {"name", iocshArgString};
@@ -30,13 +27,12 @@ static void addPVCallFunc(const iocshArgBuf *args) {
 void GateRegisterCommands() {
     iocshRegister(&createClientFuncDef, createClientCallFunc);
     iocshRegister(&addPVFuncDef, addPVCallFunc);
-    GateAsRegisterCommands();
 }
 }
 
 int main(int argc, char *argv[]) {
     GateRegisterCommands();
-    rsrv_register_server();
+    rsrvIocRegister();
     if (argc > 1) {
         iocsh(argv[1]);
     }
