@@ -1,0 +1,8 @@
+{
+    "clients": [
+        { "name": "default", "addr_list": "127.0.0.1", "auto_addr": 0, "port": 5064 }
+    ],
+    "pvs": [
+        { "pattern": "testpv", "client": "default", "as_group": "DEFAULT" }
+    ]
+}

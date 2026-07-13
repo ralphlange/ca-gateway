@@ -1,7 +1,0 @@
-[1mgateCreateClient upstream 127.0.0.1:5065[0m
-[1mgateAddPV .* upstream[0m
-[32;1mepics> [0mgateReport 0
-Gateway Cache Report: 0 PVs cached.
-Gateway Config Report
-  Pattern: .* => Client: upstream
-[32;1mepics> [0m

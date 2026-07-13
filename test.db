@@ -1,3 +1,0 @@
-record(ao, "gate:test:pv") {
-    field(VAL, "123.456")
-}

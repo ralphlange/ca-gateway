@@ -1,30 +1,10 @@
-TOP = ..
+TOP=..
 include $(TOP)/configure/CONFIG
-
-PROD_HOST = gateway
-
-# RSRV source files
-gateway_SRCS += camessage.c
-gateway_SRCS += camsgtask.c
-gateway_SRCS += caserverio.c
-gateway_SRCS += caservertask.c
-gateway_SRCS += cast_server.c
-gateway_SRCS += online_notify.c
-gateway_SRCS += rsrvIocRegister.cpp
-
-# EPICS Database conversion
-gateway_SRCS += dbConvert.c
-
-# Gateway implementation files
-gateway_SRCS += GateMain.cpp
-gateway_SRCS += GateCache.cpp
-gateway_SRCS += GateCAClient.cpp
-gateway_SRCS += GateAs.cpp
-gateway_SRCS += GateConfig.cpp
-gateway_SRCS += gateShim.cpp
-
-USR_INCLUDES += -I.
-
-PROD_LIBS += $(EPICS_BASE_HOST_LIBS)
-
+PROD_IOC = gateway
+gateway_SRCS += camessage.c camsgtask.c caserverio.c caservertask.c
+gateway_SRCS += cast_server.c online_notify.c rsrvIocRegister.c
+gateway_SRCS += gateShim.c dbConvert.c
+gateway_SRCS += GateMain.cpp GateLogic.cpp
+gateway_LIBS += $(EPICS_BASE_IOC_LIBS)
+gateway_SYS_LIBS += pcre2-8 cjson
 include $(TOP)/configure/RULES

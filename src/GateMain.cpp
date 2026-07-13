@@ -1,41 +1,36 @@
+#include "gate_compat.h"
+#include "gate_db_interface.h"
 #include <iocsh.h>
 #include <epicsExit.h>
-#include <epicsThread.h>
-#include "rsrvIocRegister.h"
-#include "GateCAClient.h"
-#include "GateConfig.h"
+#include <iostream>
 
 extern "C" {
-void rsrv_register_server();
+void rsrvIocRegister(void);
+static const iocshArg clA0 = { "name", iocshArgString }, clA1 = { "addr_list", iocshArgString }, clA2 = { "auto_addr", iocshArgInt }, clA3 = { "port", iocshArgInt };
+static const iocshArg * const clAs[] = { &clA0, &clA1, &clA2, &clA3 };
+static const iocshFuncDef clDef = { "gateCreateClient", 4, clAs, "Create client" };
+static void clCall(const iocshArgBuf *a) { gate_create_client_cmd(a[0].sval, a[1].sval, a[2].ival, a[3].ival); }
 
-static const iocshArg createClientArg0 = {"name", iocshArgString};
-static const iocshArg createClientArg1 = {"addrList", iocshArgString};
-static const iocshArg *const createClientArgs[2] = {&createClientArg0, &createClientArg1};
-static const iocshFuncDef createClientFuncDef = {"gateCreateClient", 2, createClientArgs};
-static void createClientCallFunc(const iocshArgBuf *args) {
-    GateCAClientManager::instance().createClient(args[0].sval, args[1].sval ? args[1].sval : "");
-}
+static const iocshArg pvA0 = { "pattern", iocshArgString }, pvA1 = { "client", iocshArgString }, pvA2 = { "as_group", iocshArgString };
+static const iocshArg * const pvAs[] = { &pvA0, &pvA1, &pvA2 };
+static const iocshFuncDef pvDef = { "gateAddPV", 3, pvAs, "Add PV" };
+static void pvCall(const iocshArgBuf *a) { gate_add_pv_cmd(a[0].sval, a[1].sval, a[2].sval); }
 
-static const iocshArg addPVArg0 = {"pattern", iocshArgString};
-static const iocshArg addPVArg1 = {"clientName", iocshArgString};
-static const iocshArg *const addPVArgs[2] = {&addPVArg0, &addPVArg1};
-static const iocshFuncDef addPVFuncDef = {"gateAddPV", 2, addPVArgs};
-static void addPVCallFunc(const iocshArgBuf *args) {
-    GateConfig::instance().addPVPattern(args[0].sval, args[1].sval);
-}
+static const iocshArg ldA0 = { "filename", iocshArgString };
+static const iocshArg * const ldAs[] = { &ldA0 };
+static const iocshFuncDef ldDef = { "gateLoadConfig", 1, ldAs, "Load JSON config" };
+static void ldCall(const iocshArgBuf *a) { gate_load_config(a[0].sval); }
 
-void GateRegisterCommands() {
-    iocshRegister(&createClientFuncDef, createClientCallFunc);
-    iocshRegister(&addPVFuncDef, addPVCallFunc);
+void gateIocRegister(void) {
+    iocshRegister(&clDef, clCall);
+    iocshRegister(&pvDef, pvCall);
+    iocshRegister(&ldDef, ldCall);
 }
 }
 
 int main(int argc, char *argv[]) {
-    GateRegisterCommands();
-    rsrvIocRegister();
-    if (argc > 1) {
-        iocsh(argv[1]);
-    }
-    iocsh(NULL);
-    return 0;
+    gate_init(); rsrvIocRegister(); gateIocRegister();
+    if (rsrv_psrv) { if (rsrv_psrv->init) rsrv_psrv->init(); if (rsrv_psrv->run) rsrv_psrv->run(); }
+    std::cout << "CA Gateway (rsrv-based) starting..." << std::endl;
+    iocsh(NULL); return 0;
 }
