@@ -25,7 +25,6 @@ long dbNameToAddr(const char *pname, struct dbAddr *paddr) {
     if (!gh) return -1;
     memset(paddr, 0, sizeof(*paddr));
     paddr->no_elements = 1;
-    /* Map to a server-side type for rsrv */
     paddr->field_type = G_S_DBF_DOUBLE;
     paddr->field_size = sizeof(double);
     paddr->dbr_field_type = DBR_DOUBLE;

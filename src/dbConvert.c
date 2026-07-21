@@ -1,4 +1,5 @@
 #include "gate_compat.h"
+#include "gate_compat.h"
 /*************************************************************************\
 * Copyright (c) 2012 UChicago Argonne LLC, as Operator of Argonne
 *     National Laboratory.
@@ -31,7 +32,6 @@
 #include "dbAddr.h"
 #include "dbBase.h"
 #include "dbConvert.h"
-#include "dbFldTypes.h"
 #include "dbStaticLib.h"
 #include "link.h"
 #include "recGbl.h"

@@ -8,18 +8,27 @@
 #include <ellLib.h>
 #include <envDefs.h>
 
-/* --- EPICS Server-side headers --- */
-/* Include these FIRST. They define the 'official' database types like dbfType enum. */
-#include <dbAccessDefs.h>
-#include <dbAddr.h>
-#include <dbBase.h>
-#include <dbFldTypes.h>
-#include <dbChannel.h>
-#include <dbNotify.h>
-#include <dbEvent.h>
-#include <dbServer.h>
-#include <caProto.h>
-#include <recSup.h>
+#ifdef EPICS_VERSION_INT
+#  define EPICS_VERSION_AT_LEAST(v,r,l,p) (EPICS_VERSION_INT >= VERSION_INT(v,r,l,p))
+#else
+#  define EPICS_VERSION_AT_LEAST(v,r,l,p) (EPICS_VERSION > (v) || (EPICS_VERSION == (v) && EPICS_REVISION >= (r)))
+#endif
+
+#if EPICS_VERSION_AT_LEAST(7,0,0,0)
+#  include <dbAccessDefs.h>
+#  include <dbAddr.h>
+#  include <dbBase.h>
+#  include <dbFldTypes.h>
+#  include <dbChannel.h>
+#  include <dbNotify.h>
+#  include <dbEvent.h>
+#  include <dbServer.h>
+#  include <net_convert.h>
+#else
+#  include <dbAccess.h>
+#  include <dbEvent.h>
+#endif
+
 #include <asLib.h>
 #include <asDbLib.h>
 
@@ -27,7 +36,6 @@
 extern "C" {
 #endif
 
-/* Save server-side DBF macros for mapping CA DBR types to internal Base 7 types */
 enum {
     G_S_DBF_STRING = 0,
     G_S_DBF_CHAR   = 1,
@@ -43,10 +51,6 @@ enum {
     G_S_DBF_ENUM   = 11
 };
 
-/* --- Undefine conflicting macros --- */
-/* These macros are defined in server headers (often as enums or different values)
-   and also in client-side db_access.h. We must clear them to let db_access.h win
-   for the CA protocol definitions. */
 #undef DBR_STRING
 #undef DBR_SHORT
 #undef DBR_FLOAT
@@ -58,7 +62,6 @@ enum {
 #undef DBR_PUT_ACKS
 #undef VALID_DB_REQ
 #undef INVALID_DB_REQ
-
 #undef DBF_STRING
 #undef DBF_CHAR
 #undef DBF_UCHAR
@@ -72,12 +75,9 @@ enum {
 #undef DBF_MENU
 #undef DBF_DEVICE
 
-/* --- EPICS Client-side headers --- */
 #include <db_access.h>
 #include <cadef.h>
 
-/* --- Restore standard CA Protocol Constants --- */
-/* camessage.c and our Gateway Logic depend on these being the standard CA values (0-6) */
 #undef DBF_STRING
 #define DBF_STRING 0
 #undef DBF_SHORT
@@ -125,10 +125,10 @@ enum {
 #endif
 
 #ifndef VALID_DB_REQ
-#  define VALID_DB_REQ(x) ((x >= 0) && (x <= LAST_BUFFER_TYPE))
+#  define VALID_DB_REQ(x) ((x) >= 0 && (x) <= LAST_BUFFER_TYPE)
 #endif
 #ifndef INVALID_DB_REQ
-#  define INVALID_DB_REQ(x) ((x < 0) || (x > LAST_BUFFER_TYPE))
+#  define INVALID_DB_REQ(x) ((x) < 0 || (x) > LAST_BUFFER_TYPE)
 #endif
 
 typedef epicsOldString dbr_string_t;
@@ -139,7 +139,45 @@ typedef epicsInt32 dbr_long_t;
 typedef epicsFloat32 dbr_float_t;
 typedef epicsFloat64 dbr_double_t;
 
-/* --- Utility Shims --- */
+#if !EPICS_VERSION_AT_LEAST(7,0,0,0)
+#ifndef INC_dbChannel_H
+struct dbChannel {
+    const char *name;
+    long final_no_elements;
+    short final_type;
+};
+typedef struct dbChannel dbChannel;
+#endif
+#ifndef INC_dbServer_H
+typedef struct dbServer {
+    ELLNODE node;
+    const char *name;
+    void (* report) (unsigned level);
+    void (* stats) (unsigned *channels, unsigned *clients);
+    int (* client) (char *pBuf, size_t bufSize);
+    void (* init) (void);
+    void (* run) (void);
+    void (* pause) (void);
+    void (* stop) (void);
+} dbServer;
+#endif
+int dbRegisterServer(dbServer *psrv);
+#ifndef dbChannelName
+#  define dbChannelName(CHAN) ((CHAN)->name)
+#endif
+#ifndef dbChannelFinalElements
+#  define dbChannelFinalElements(CHAN) ((CHAN)->final_no_elements)
+#endif
+#ifndef dbChannelFinalCAType
+#  define dbChannelFinalCAType(CHAN) ((CHAN)->final_type)
+#endif
+#ifndef SPC_NOMOD
+#  define SPC_NOMOD 1
+#endif
+typedef unsigned long arrayElementCount;
+int caNetConvert (unsigned type, const void *pSrc, void *pDest, int hton, arrayElementCount count );
+#endif
+
 static inline int gate_dbr_to_dbf(int dbr) {
     switch(dbr % 7) {
         case 0: return G_S_DBF_STRING;
@@ -152,15 +190,12 @@ static inline int gate_dbr_to_dbf(int dbr) {
         default: return G_S_DBF_STRING;
     }
 }
-
 #ifndef dbr_type_to_DBF
 #  define dbr_type_to_DBF(type) gate_dbr_to_dbf(type)
 #endif
-
 extern const unsigned short dbr_size[];
 extern const unsigned short dbr_value_size[];
 extern unsigned short dbDBRnewToDBRold[];
-
 #undef EPICS_CA_MCAST_TTL
 #define EPICS_CA_MCAST_TTL gate_mcast_ttl
 extern const ENV_PARAM gate_mcast_ttl;
@@ -171,11 +206,9 @@ extern const ENV_PARAM gate_auto_array_bytes;
 #  define asCheckClientIP gate_asCheckClientIP
    extern int gate_asCheckClientIP;
 #endif
-
 extern dbServer *rsrv_psrv;
 
 #ifdef __cplusplus
 }
 #endif
-
 #endif

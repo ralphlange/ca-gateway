@@ -1,4 +1,5 @@
 #include "gate_compat.h"
+#include "gate_compat.h"
 /*************************************************************************\
 * Copyright (c) 2002 The University of Chicago, as Operator of Argonne
 *     National Laboratory.
@@ -30,7 +31,6 @@
 
 #include "caerr.h"
 
-#include "db_access.h"
 #include "rsrv.h"
 #include "server.h"
 

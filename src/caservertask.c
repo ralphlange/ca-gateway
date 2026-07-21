@@ -1,4 +1,5 @@
 #include "gate_compat.h"
+#include "gate_compat.h"
 /*************************************************************************\
 * Copyright (c) 2016 Michael Davidsaver
 * Copyright (c) 2015 Brookhaven Science Assoc. as operator of Brookhaven
@@ -41,7 +42,6 @@
 #include "dbChannel.h"
 #include "dbCommon.h"
 #include "dbEvent.h"
-#include "db_field_log.h"
 #include "dbServer.h"
 #include "rsrv.h"
 

@@ -1,4 +1,5 @@
 #include "gate_compat.h"
+#include "gate_compat.h"
 /*************************************************************************\
 * Copyright (c) 2010 Brookhaven National Laboratory.
 * Copyright (c) 2010 Helmholtz-Zentrum Berlin
@@ -37,16 +38,13 @@
 #include "osiSock.h"
 
 #include "caerr.h"
-#include "net_convert.h"
 
 #include "asDbLib.h"
 #include "callback.h"
-#include "db_access.h"
 #include "db_access_routines.h"
 #include "dbChannel.h"
 #include "dbCommon.h"
 #include "dbEvent.h"
-#include "db_field_log.h"
 #include "dbNotify.h"
 #include "rsrv.h"
 #include "server.h"

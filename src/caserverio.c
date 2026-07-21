@@ -1,4 +1,5 @@
 #include "gate_compat.h"
+#include "gate_compat.h"
 /*************************************************************************\
 * Copyright (c) 2002 The University of Chicago, as Operator of Argonne
 *     National Laboratory.
@@ -29,7 +30,6 @@
 #include "osiSock.h"
 
 #include "caerr.h"
-#include "net_convert.h"
 
 #include "server.h"
 
