@@ -10,7 +10,7 @@
 #include <cstring>
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
-#include <cjson/cJSON.h>
+#include <yajl_parse.h>
 
 struct GateData {
     int dbrType;
@@ -191,35 +191,129 @@ void gate_add_pv_cmd(const char* pattern, const char* client_name, const char* a
     }
 }
 
+namespace {
+
+struct ConfigParseCtx {
+    enum Ctx { CTX_ROOT_OBJ, CTX_CLIENTS_ARRAY, CTX_CLIENT_OBJ, CTX_PVS_ARRAY, CTX_PV_OBJ, CTX_OTHER };
+    std::vector<Ctx> stack;
+    std::string key;
+
+    std::string name, addr_list;
+    bool auto_addr;
+    int port;
+    bool has_name;
+
+    std::string pattern, client_name, as_group;
+    bool has_pattern, has_client;
+
+    Ctx top() const { return stack.back(); }
+};
+
+int cb_start_map(void* vctx) {
+    ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
+    if (ctx->stack.empty()) {
+        ctx->stack.push_back(ConfigParseCtx::CTX_ROOT_OBJ);
+    } else if (ctx->top() == ConfigParseCtx::CTX_CLIENTS_ARRAY) {
+        ctx->stack.push_back(ConfigParseCtx::CTX_CLIENT_OBJ);
+        ctx->name.clear(); ctx->addr_list.clear();
+        ctx->auto_addr = true; ctx->port = 5064; ctx->has_name = false;
+    } else if (ctx->top() == ConfigParseCtx::CTX_PVS_ARRAY) {
+        ctx->stack.push_back(ConfigParseCtx::CTX_PV_OBJ);
+        ctx->pattern.clear(); ctx->client_name.clear(); ctx->as_group = "DEFAULT";
+        ctx->has_pattern = false; ctx->has_client = false;
+    } else {
+        ctx->stack.push_back(ConfigParseCtx::CTX_OTHER);
+    }
+    return 1;
+}
+
+int cb_end_map(void* vctx) {
+    ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
+    ConfigParseCtx::Ctx t = ctx->top();
+    ctx->stack.pop_back();
+    if (t == ConfigParseCtx::CTX_CLIENT_OBJ && ctx->has_name) {
+        gate_create_client_cmd(ctx->name.c_str(), ctx->addr_list.c_str(), ctx->auto_addr ? 1 : 0, ctx->port);
+    } else if (t == ConfigParseCtx::CTX_PV_OBJ && ctx->has_pattern && ctx->has_client) {
+        gate_add_pv_cmd(ctx->pattern.c_str(), ctx->client_name.c_str(), ctx->as_group.c_str());
+    }
+    return 1;
+}
+
+int cb_start_array(void* vctx) {
+    ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
+    if (ctx->top() == ConfigParseCtx::CTX_ROOT_OBJ && ctx->key == "clients") {
+        ctx->stack.push_back(ConfigParseCtx::CTX_CLIENTS_ARRAY);
+    } else if (ctx->top() == ConfigParseCtx::CTX_ROOT_OBJ && ctx->key == "pvs") {
+        ctx->stack.push_back(ConfigParseCtx::CTX_PVS_ARRAY);
+    } else {
+        ctx->stack.push_back(ConfigParseCtx::CTX_OTHER);
+    }
+    return 1;
+}
+
+int cb_end_array(void* vctx) {
+    ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
+    ctx->stack.pop_back();
+    return 1;
+}
+
+int cb_map_key(void* vctx, const unsigned char* key, size_t len) {
+    ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
+    ctx->key.assign((const char*)key, len);
+    return 1;
+}
+
+int cb_string(void* vctx, const unsigned char* val, size_t len) {
+    ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
+    std::string s((const char*)val, len);
+    if (ctx->top() == ConfigParseCtx::CTX_CLIENT_OBJ) {
+        if (ctx->key == "name") { ctx->name = s; ctx->has_name = true; }
+        else if (ctx->key == "addr_list") ctx->addr_list = s;
+    } else if (ctx->top() == ConfigParseCtx::CTX_PV_OBJ) {
+        if (ctx->key == "pattern") { ctx->pattern = s; ctx->has_pattern = true; }
+        else if (ctx->key == "client") { ctx->client_name = s; ctx->has_client = true; }
+        else if (ctx->key == "as_group") ctx->as_group = s;
+    }
+    return 1;
+}
+
+int cb_boolean(void* vctx, int boolVal) {
+    ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
+    if (ctx->top() == ConfigParseCtx::CTX_CLIENT_OBJ && ctx->key == "auto_addr") ctx->auto_addr = boolVal != 0;
+    return 1;
+}
+
+int cb_integer(void* vctx, long long integerVal) {
+    ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
+    if (ctx->top() == ConfigParseCtx::CTX_CLIENT_OBJ && ctx->key == "port") ctx->port = (int)integerVal;
+    return 1;
+}
+
+const yajl_callbacks configCallbacks = {
+    NULL,           /* yajl_null */
+    cb_boolean,
+    cb_integer,
+    NULL,           /* yajl_double */
+    NULL,           /* yajl_number */
+    cb_string,
+    cb_start_map,
+    cb_map_key,
+    cb_end_map,
+    cb_start_array,
+    cb_end_array
+};
+
+} // namespace
+
 void gate_load_config(const char* filename) {
     std::ifstream ifs(filename);
     if (!ifs.is_open()) return;
     std::string content((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
-    cJSON* root = cJSON_Parse(content.c_str());
-    if (!root) return;
 
-    cJSON* clients_obj = cJSON_GetObjectItem(root, "clients");
-    if (cJSON_IsArray(clients_obj)) {
-        cJSON* client_obj;
-        cJSON_ArrayForEach(client_obj, clients_obj) {
-            cJSON* n = cJSON_GetObjectItem(client_obj, "name");
-            cJSON* a = cJSON_GetObjectItem(client_obj, "addr_list");
-            cJSON* aa = cJSON_GetObjectItem(client_obj, "auto_addr");
-            cJSON* p = cJSON_GetObjectItem(client_obj, "port");
-            if (n) gate_create_client_cmd(n->valuestring, a?a->valuestring:"", aa?cJSON_IsTrue(aa):1, p?p->valueint:5064);
-        }
-    }
-
-    cJSON* pvs_obj = cJSON_GetObjectItem(root, "pvs");
-    if (cJSON_IsArray(pvs_obj)) {
-        cJSON* pv_obj;
-        cJSON_ArrayForEach(pv_obj, pvs_obj) {
-            cJSON* pat = cJSON_GetObjectItem(pv_obj, "pattern");
-            cJSON* cl = cJSON_GetObjectItem(pv_obj, "client");
-            cJSON* gr = cJSON_GetObjectItem(pv_obj, "as_group");
-            if (pat && cl) gate_add_pv_cmd(pat->valuestring, cl->valuestring, gr?gr->valuestring:"DEFAULT");
-        }
-    }
-    cJSON_Delete(root);
+    ConfigParseCtx ctx;
+    yajl_handle hand = yajl_alloc(&configCallbacks, NULL, &ctx);
+    yajl_parse(hand, (const unsigned char*)content.data(), content.size());
+    yajl_complete_parse(hand);
+    yajl_free(hand);
 }
 }

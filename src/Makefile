@@ -20,6 +20,6 @@ gateway_SRCS += GateMain.cpp GateLogic.cpp
 
 PROD_LIBS += $(EPICS_BASE_IOC_LIBS)
 
-gateway_SYS_LIBS += pcre2-8 cjson
+gateway_SYS_LIBS += pcre2-8
 
 include $(TOP)/configure/RULES

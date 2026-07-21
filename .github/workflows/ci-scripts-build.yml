@@ -126,7 +126,7 @@ jobs:
     - name: "apt-get install"
       run: |
         sudo apt-get update
-        sudo apt-get -y install qemu-system-x86 g++-mingw-w64-x86-64 gdb libpcre2-dev libcjson-dev
+        sudo apt-get -y install qemu-system-x86 g++-mingw-w64-x86-64 gdb libpcre2-dev
       if: runner.os == 'Linux'
     - name: Install Python test dependencies with pip
       run: |
