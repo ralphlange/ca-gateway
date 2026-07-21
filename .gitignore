@@ -1,18 +1,16 @@
+# EPICS installation dirs
+/cfg/
 /bin/
-/include/
 /lib/
 /db/
 /dbd/
+/html/
+/include/
+/templates/
 /configure/*.local
-html/
-O.*/
+/documentation/build/
 envPaths
-/QtC-*
-/.qtc_*
-*.orig
-.idea/
-__pycache__
 
-# Gateway generated scriptlets
-gateway.killer
-gateway.restart
+O.*/
+*.orig
+.iocsh_history
