@@ -20,6 +20,19 @@ int dbRegisterServer(dbServer *psrv) {
     return 0;
 }
 
+/*
+ * rsrv's UDP search-reply handler (search_reply_udp() in camessage.c) calls the real
+ * dbChannelTest() directly -- unlike dbNameToAddr/dbChannel_create below, it never goes
+ * through a dbAddr/dbChannel at all. The real dbChannelTest() does its own static-database
+ * lookup against pdbbase (dbFindRecordPart -> dbPvdFind), which segfaults here since
+ * dummy_dbbase has no process-variable directory. Overriding it is required for ANY CA
+ * client's normal UDP "who has this PV" search to work at all (returns 0 = found, matching
+ * the real function's convention).
+ */
+long dbChannelTest(const char *pname) {
+    return gate_channel_exists(pname) ? 0 : -1;
+}
+
 long dbNameToAddr(const char *pname, struct dbAddr *paddr) {
     void* gh = gate_create_channel(pname);
     if (!gh) return -1;
@@ -79,6 +92,17 @@ void db_event_enable(dbEventSubscription sub) {}
 void db_event_disable(dbEventSubscription sub) {}
 void db_post_single_event(dbEventSubscription sub) {}
 int db_post_extra_labor(dbEventCtx ctx) { return 0; }
+/*
+ * dbEventCtx here is always the fake, non-NULL handle from db_init_events() above, not a
+ * real event_user*. The real dbEvent.c versions of these dereference ctx and crash; since
+ * db_post_extra_labor()/db_close_events() are already no-ops above (nothing ever actually
+ * queues/delivers the extra-labor callback or changes priority), these are safe no-ops too.
+ */
+int db_add_extra_labor_event(dbEventCtx ctx, EXTRALABORFUNC *func, void *arg) { return DB_EVENT_OK; }
+void db_flush_extra_labor_event(dbEventCtx ctx) {}
+void db_event_flow_ctrl_mode_on(dbEventCtx ctx) {}
+void db_event_flow_ctrl_mode_off(dbEventCtx ctx) {}
+void db_event_change_priority(dbEventCtx ctx, unsigned epicsPriority) {}
 int db_start_events(dbEventCtx ctx, const char *taskname, void (*init_func)(void *), void *init_func_arg, unsigned osiPriority) {
     if (init_func) init_func(init_func_arg);
     return 0;

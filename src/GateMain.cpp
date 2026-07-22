@@ -11,10 +11,10 @@ static const iocshArg * const clAs[] = { &clA0, &clA1, &clA2, &clA3 };
 static const iocshFuncDef clDef = { "gateCreateClient", 4, clAs, "Create client" };
 static void clCall(const iocshArgBuf *a) { gate_create_client_cmd(a[0].sval, a[1].sval, a[2].ival, a[3].ival); }
 
-static const iocshArg pvA0 = { "pattern", iocshArgString }, pvA1 = { "client", iocshArgString }, pvA2 = { "as_group", iocshArgString };
-static const iocshArg * const pvAs[] = { &pvA0, &pvA1, &pvA2 };
-static const iocshFuncDef pvDef = { "gateAddPV", 3, pvAs, "Add PV" };
-static void pvCall(const iocshArgBuf *a) { gate_add_pv_cmd(a[0].sval, a[1].sval, a[2].sval); }
+static const iocshArg pvA0 = { "pattern", iocshArgString }, pvA1 = { "client", iocshArgString }, pvA2 = { "as_group", iocshArgString }, pvA3 = { "target", iocshArgString };
+static const iocshArg * const pvAs[] = { &pvA0, &pvA1, &pvA2, &pvA3 };
+static const iocshFuncDef pvDef = { "gateAddPV", 4, pvAs, "Add PV (optional target: PCRE2 $1-style rewrite of the upstream name)" };
+static void pvCall(const iocshArgBuf *a) { gate_add_pv_cmd(a[0].sval, a[1].sval, a[2].sval, a[3].sval); }
 
 static const iocshArg ldA0 = { "filename", iocshArgString };
 static const iocshArg * const ldAs[] = { &ldA0 };
