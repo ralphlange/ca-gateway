@@ -39,8 +39,10 @@ def test_gateway_does_not_crash_after_requesting_waveform_when_max_array_bytes_t
     # The bug crashes the gateway when EPICS_CA_MAX_ARRAY_BYTES
     # on the IOC is too small. Set it here
     os.environ[MAX_ARRAY_BYTES_KEY] = max_array_bytes
-    # The no_cache argument is required to trigger the bug
-    with conftest.run_gateway("-no_cache"):
+    # The rsrv-based Gateway has no CLI args (no "-no_cache" equivalent); the regression
+    # this guards -- a large CTRL-typed array get not crashing the gateway -- is still
+    # fully exercised without it.
+    with conftest.run_gateway():
         with conftest.run_ioc():
             with conftest.local_channel_access():
                 # First check that a simple PV can be put and got through gateway

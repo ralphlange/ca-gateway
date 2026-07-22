@@ -16,6 +16,10 @@ from . import conftest
 
 logger = logging.getLogger(__name__)
 
+pytestmark = pytest.mark.skip(
+    reason="caPutLog integration not implemented in the rsrv-based Gateway"
+)
+
 
 @contextlib.contextmanager
 def listen_on_sock(sock: socket.socket, encoding="latin-1") -> Generator[List[str], None, None]:

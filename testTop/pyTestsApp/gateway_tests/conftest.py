@@ -17,9 +17,11 @@ Environment variables used:
 import contextlib
 import dataclasses
 import gc
+import json
 import logging
 import math
 import os
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -35,6 +37,54 @@ import pytest
 from . import config
 
 logger = logging.getLogger(__name__)
+
+
+# The rsrv-based Gateway has no ALIAS/access-security file loading of its own; it's
+# driven entirely by `gateCreateClient`/`gateAddPV`/`gateLoadConfig` iocsh commands. To
+# avoid rewriting every test file's pvlist_contents (written once, in the legacy
+# ALIAS/ALLOW/DENY mini-language), this translates it into the new JSON route schema
+# ({"pattern", "target"?, "client", "as_group"}) instead.
+_PVLIST_LINE_RE = re.compile(
+    r"^(?P<pattern>\S+)\s+(?P<action>ALIAS|ALLOW|DENY)(?:\s+(?P<rest>.*))?$"
+)
+
+
+def _bre_pattern_to_pcre2(pattern: str) -> str:
+    """BRE `\\(..\\)` grouping -> plain PCRE2 `(..)`; already-PCRE patterns pass through."""
+    return pattern.replace(r"\(", "(").replace(r"\)", ")")
+
+
+def _backrefs_to_dollar(text: str) -> str:
+    """Traditional pvlist `\\1`-style backreferences -> PCRE2 `$1`-style, for `target`."""
+    return re.sub(r"\\(\d)", r"$\1", text)
+
+
+def pvlist_text_to_routes(text: str, client: str = "default") -> List[Dict[str, str]]:
+    """Translate legacy pvlist ALIAS/ALLOW/DENY lines into the new Gateway's JSON routes."""
+    routes: List[Dict[str, str]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.upper().startswith("EVALUATION"):
+            continue
+        m = _PVLIST_LINE_RE.match(line)
+        if not m:
+            continue
+        pattern = _bre_pattern_to_pcre2(m.group("pattern"))
+        action = m.group("action").upper()
+        rest = (m.group("rest") or "").strip()
+        if action == "DENY":
+            continue  # no route: unmatched names correctly report "not found"
+        if action == "ALIAS":
+            parts = rest.split(None, 1)
+            if not parts:
+                continue
+            target = _backrefs_to_dollar(parts[0])
+            as_group = parts[1].strip() if len(parts) > 1 else "DEFAULT"
+            routes.append({"pattern": pattern, "target": target, "client": client, "as_group": as_group})
+        elif action == "ALLOW":
+            as_group = rest if rest else "DEFAULT"
+            routes.append({"pattern": pattern, "client": client, "as_group": as_group})
+    return routes
 
 
 @contextlib.contextmanager
@@ -197,7 +247,6 @@ def run_ioc(
 
 @contextlib.contextmanager
 def run_gateway(
-    *extra_args: str,
     access: str = config.default_access,
     pvlist: str = config.default_pvlist,
     ioc_port: int = config.default_ioc_port,
@@ -208,16 +257,21 @@ def run_gateway(
     """
     Starts a gateway process with the provided configuration.
 
+    The rsrv-based Gateway has no CLI parsing at all: it's driven entirely by iocsh
+    commands fed over stdin, and its listening address/port come from the standard
+    `EPICS_CAS_INTF_ADDR_LIST`/`EPICS_CA_SERVER_PORT` environment variables (matching
+    the pattern used by the repo-root `test_gateway.sh`). ``pvlist`` (a path to a file
+    in the legacy ALIAS/ALLOW/DENY mini-language) is translated into the new JSON route
+    schema via `pvlist_text_to_routes` and loaded with `gateLoadConfig`.
+
     Parameters
     ----------
-    *extra_args : str
-        Extra arguments to pass to the gateway process.
-
     access : str, optional
-        The access rights file.  Defaults to ``default_access``.
+        Unused -- the rsrv-based Gateway never loads an ACF (no `asInit` call), kept
+        only so existing call sites don't need to drop the keyword.
 
     pvlist : str, optional
-        The pvlist filename.  Defaults to ``default_pvlist``.
+        Path to a pvlist-mini-language file.  Defaults to ``default_pvlist``.
 
     ioc_port : int, optional
         The IOC port number - defaults to ``default_ioc_port``.
@@ -226,44 +280,48 @@ def run_gateway(
         The gateway port number - defaults to ``default_gateway_port``.
 
     verbose : bool, optional
-        Configure the gateway to output verbose information.
+        Unused for now -- there's no CLI debug-level flag to forward to.
 
     stats_prefix : str, optional
-        Gateway statistics PV prefix.
+        Unused -- Gateway statistics PVs aren't implemented.
     """
-    cmd = [
-        config.gateway_executable,
-        "-sip",
-        "localhost",
-        "-sport",
-        str(gateway_port),
-        "-cip",
-        "localhost",
-        "-cport",
-        str(ioc_port),
-        "-access",
-        access,
-        "-pvlist",
-        pvlist,
-        "-archive",
-        "-prefix",
-        stats_prefix,
-    ]
-    cmd.extend(extra_args)
+    del access, verbose, stats_prefix  # not consumed by the rsrv-based Gateway
 
-    if verbose:
-        cmd.extend(["-debug", str(config.gateway_debug_level)])
+    pvlist_text = ""
+    if pvlist and os.path.exists(pvlist):
+        # latin-1 can decode any byte sequence, matching how custom_environment() writes
+        # pvlist_contents (default encoding="latin-1") without risking a UnicodeDecodeError.
+        with open(pvlist, "rt", encoding="latin-1") as fp:
+            pvlist_text = fp.read()
+    routes = pvlist_text_to_routes(pvlist_text)
 
-    quiescence_period = 1.0 if os.environ.get("BASE", "").startswith("3.14") else 0.0
-    with run_process(
-        cmd,
-        dict(os.environ),
-        verbose=verbose,
-        interactive=False,
-        wait_for=b"Running as user",
-        quiescence_period=quiescence_period,
-    ) as proc:
-        yield proc
+    env = dict(os.environ)
+    env["EPICS_CA_SERVER_PORT"] = str(gateway_port)
+    env["EPICS_CAS_INTF_ADDR_LIST"] = "localhost"
+
+    config_fp = tempfile.NamedTemporaryFile(mode="wt", suffix=".json", delete=False)
+    try:
+        json.dump({"pvs": routes}, config_fp)
+        config_fp.close()
+
+        with run_process(
+            [config.gateway_executable],
+            env,
+            verbose=verbose,
+            interactive=True,
+            wait_for=b"epics>",
+        ) as proc:
+            assert proc.stdin is not None
+            proc.stdin.write(
+                (
+                    f"gateCreateClient default localhost 0 {ioc_port}\n"
+                    f"gateLoadConfig {config_fp.name}\n"
+                ).encode()
+            )
+            proc.stdin.flush()
+            yield proc
+    finally:
+        os.unlink(config_fp.name)
 
 
 @contextlib.contextmanager
@@ -479,8 +537,9 @@ def custom_environment(
             "PVList:\n%s",
             textwrap.indent(pvlist_contents, "    "),
         )
+        del gateway_args  # the rsrv-based Gateway has no CLI args to forward
         with (
-            run_gateway(*gateway_args, access=access_fp.name, pvlist=pvlist_fp.name),
+            run_gateway(access=access_fp.name, pvlist=pvlist_fp.name),
             run_ioc(*ioc_args, db_file=dbfile_fp.name, dbd_file=dbd_file),
             local_channel_access(),
         ):
