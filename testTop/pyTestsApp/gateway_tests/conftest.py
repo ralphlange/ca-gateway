@@ -280,12 +280,13 @@ def run_gateway(
         The gateway port number - defaults to ``default_gateway_port``.
 
     verbose : bool, optional
-        Unused for now -- there's no CLI debug-level flag to forward to.
+        Controls whether the gateway subprocess's stdout is logged (see `run_process`).
+        There's no CLI debug-level flag to additionally forward.
 
     stats_prefix : str, optional
         Unused -- Gateway statistics PVs aren't implemented.
     """
-    del access, verbose, stats_prefix  # not consumed by the rsrv-based Gateway
+    del access, stats_prefix  # not consumed by the rsrv-based Gateway
 
     pvlist_text = ""
     if pvlist and os.path.exists(pvlist):

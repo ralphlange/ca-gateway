@@ -6,6 +6,9 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -22,6 +25,15 @@ struct GateData {
     short severity = 0;
     epicsTimeStamp stamp = {0, 0};
 };
+
+// The Gateway's own eager upstream subscription (created on connect, independent of any
+// downstream client's requested mask): includes DBE_PROPERTY so gchan->meta gets refreshed
+// on any upstream limit/precision/units/enum-string change, regardless of whether any
+// downstream client happens to subscribe with DBE_PROPERTY itself. gate_get_count() always
+// serves gchan->meta (a single per-channel cache) no matter which masksub's event triggered
+// delivery, so this is what keeps CTRL/GR-formatted responses accurate for e.g. a plain
+// DBE_VALUE-only downstream monitor after a .HIHI change upstream.
+static const unsigned int GATE_DEFAULT_MASK = DBE_VALUE | DBE_PROPERTY;
 
 // Appends ":port" to each whitespace-separated address that doesn't already specify one.
 // EPICS_CA_SERVER_PORT is process-wide and also governs the Gateway's own CAS listening
@@ -75,6 +87,8 @@ struct GateChannel {
         struct UserSub {
             void (*cb)(void*, void*, int, int, void*);
             void* user_arg;
+            void* dbchan; // the real struct dbChannel* rsrv gave db_add_event(), NOT this MaskSub
+            struct MaskSub* owner; // so gate_cancel_event() can find+erase itself
         };
         std::vector<UserSub*> userSubs;
         std::mutex subsMutex;
@@ -84,6 +98,13 @@ struct GateChannel {
 
     GateStaticMeta meta;
     std::mutex metaMutex;
+
+    // Signaled once the eager default (DBE_VALUE) subscription delivers its first event, so
+    // gate_create_channel() can wait briefly for real data instead of handing back a channel
+    // that will fail every get/monitor request until the upstream connection happens to land.
+    std::mutex readyMutex;
+    std::condition_variable readyCv;
+    bool ready = false;
 
     GateChannel(const char* name, const char* upstream_name, const char* as_group) : name(name), caChid(NULL), asMember(NULL) {
         ca_create_channel(upstream_name, ca_conn_cb, this, 20, &caChid);
@@ -104,18 +125,41 @@ struct Route {
 static std::vector<Route> routes;
 static std::mutex routesMutex;
 
+// Metadata refresh is always async (ca_array_get_callback, never a blocking ca_pend_io call):
+// this is triggered from CA callbacks (ca_conn_cb/ca_event_cb) that themselves run on libca's
+// single callback-dispatch thread even in preemptive-callback mode -- blocking that thread on
+// a wait that itself depends on that same thread processing more I/O just times out (tried
+// this, it silently left gchan->meta stale/zeroed rather than working). So a DBE_PROPERTY
+// event's downstream delivery is deferred: instead of notifying subscribers immediately with
+// (possibly stale) metadata, ca_event_cb stashes the event and hands off to ca_meta_cb, which
+// delivers it once the refresh actually lands.
+struct MetaRefreshCtx {
+    GateChannel* gchan;
+    GateChannel::MaskSub* msub;   // whose subscribers to notify once refreshed; null = no pending notify (e.g. initial connect-time refresh)
+    std::shared_ptr<GateData> data;
+};
+
 static void ca_meta_cb(struct event_handler_args args) {
-    GateChannel* gchan = (GateChannel*)args.usr;
-    if (args.status != ECA_NORMAL) return;
-    int dbf = gate_dbr_to_dbf(args.type);
-    std::lock_guard<std::mutex> lock(gchan->metaMutex);
-    gate_format_extract_meta(dbf, args.dbr, &gchan->meta);
+    std::unique_ptr<MetaRefreshCtx> ctx((MetaRefreshCtx*)args.usr);
+    if (args.status == ECA_NORMAL) {
+        int dbf = gate_dbr_to_dbf(args.type);
+        std::lock_guard<std::mutex> lock(ctx->gchan->metaMutex);
+        gate_format_extract_meta(dbf, args.dbr, &ctx->gchan->meta);
+    }
+    if (ctx->msub && ctx->data) {
+        std::lock_guard<std::mutex> lock(ctx->msub->subsMutex);
+        for (auto usub : ctx->msub->userSubs) {
+            void* pvalue = (void*)((char*)ctx->data->data.data() + dbr_size[ctx->data->dbrType] - dbr_value_size[ctx->data->dbrType]);
+            usub->cb(usub->user_arg, usub->dbchan, 0, ctx->data->count, pvalue);
+        }
+    }
 }
 
-static void refresh_static_meta(GateChannel* gchan, chid ch) {
+static void refresh_static_meta(GateChannel* gchan, chid ch, GateChannel::MaskSub* pending_msub, std::shared_ptr<GateData> pending_data) {
     short native = ca_field_type(ch);
     short ctrl_type = (short)(native + 28); // DBR_CTRL_STRING(28) + native basic type (0..6)
-    ca_array_get_callback(ctrl_type, 1, ch, ca_meta_cb, gchan);
+    auto* ctx = new MetaRefreshCtx{gchan, pending_msub, pending_data};
+    ca_array_get_callback(ctrl_type, 1, ch, ca_meta_cb, ctx);
     ca_flush_io();
 }
 
@@ -136,15 +180,29 @@ static void ca_event_cb(struct event_handler_args args) {
         std::lock_guard<std::mutex> lock(msub->dataMutex);
         msub->lastData = newData;
     }
+    if (msub->mask == GATE_DEFAULT_MASK) {
+        GateChannel* gchan = msub->gchan;
+        std::lock_guard<std::mutex> lock(gchan->readyMutex);
+        if (!gchan->ready) {
+            gchan->ready = true;
+            gchan->readyCv.notify_all();
+        }
+    }
     if (msub->mask & DBE_PROPERTY) {
         // A property change may have altered limits/precision/units/enum strings upstream;
-        // refresh the cached static metadata so gate_get_count() serves current GR_/CTRL_ data.
-        refresh_static_meta(msub->gchan, msub->gchan->caChid);
+        // defer this event's delivery until the refreshed metadata actually lands (see
+        // refresh_static_meta()'s comment) instead of notifying subscribers immediately with
+        // what could still be the old cached values.
+        refresh_static_meta(msub->gchan, msub->gchan->caChid, msub, newData);
+        return;
     }
     std::lock_guard<std::mutex> lock(msub->subsMutex);
     for (auto usub : msub->userSubs) {
         void* pvalue = (void*)((char*)newData->data.data() + dbr_size[newData->dbrType] - dbr_value_size[newData->dbrType]);
-        usub->cb(usub->user_arg, (void*)msub, newData->dbrType, newData->count, pvalue);
+        // usub->cb is really rsrv's read_reply(pArg, dbChannel*, eventsRemaining, db_field_log*):
+        // pass the real dbChannel* (not msub) and eventsRemaining=0 (so its
+        // `if (!eventsRemaining) cas_send_bs_msg(...)` actually flushes this event promptly).
+        usub->cb(usub->user_arg, usub->dbchan, 0, newData->count, pvalue);
     }
 }
 
@@ -162,16 +220,22 @@ static std::shared_ptr<GateChannel::MaskSub> get_or_create_mask_sub(GateChannel*
     gchan->maskSubs[select] = msub;
     short native = ca_field_type(ch);
     short time_type = (short)(native + 14); // DBR_TIME_STRING(14) + native basic type (0..6)
-    ca_create_subscription(time_type, ca_element_count(ch), ch, select, ca_event_cb, msub.get(), &msub->caEvid);
+    // Count 0 = autosize: the real upstream IOC then reports each event's actual
+    // current element count (e.g. a waveform's NORD), not the fixed native max
+    // (NELM). Requesting a fixed count instead pins every delivered GateData::count
+    // at NELM (CA pads non-autosize subscriptions to the requested count with
+    // zeros), permanently masking the real, current count from everything
+    // downstream that reads it.
+    ca_create_subscription(time_type, 0, ch, select, ca_event_cb, msub.get(), &msub->caEvid);
     ca_flush_io();
     return msub;
 }
 
 static void ca_conn_cb(struct connection_handler_args args) {
-    if (args.op != CA_OP_CONN_UP) return;
     GateChannel* gchan = (GateChannel*)ca_puser(args.chid);
-    get_or_create_mask_sub(gchan, args.chid, DBE_VALUE);
-    refresh_static_meta(gchan, args.chid);
+    if (args.op != CA_OP_CONN_UP) return;
+    get_or_create_mask_sub(gchan, args.chid, GATE_DEFAULT_MASK);
+    refresh_static_meta(gchan, args.chid, nullptr, nullptr);
 }
 
 static ca_client_context* g_ca_ctx = NULL;
@@ -191,6 +255,9 @@ void gate_init(void) {
     g_ca_ctx = ca_current_context();
 }
 
+// Finds or creates the GateChannel for `name`, but never blocks: used both by the fast
+// UDP-search-reply path (gate_channel_exists(), which only needs a yes/no route match) and
+// as the first half of the TCP claim-channel path (see gate_wait_channel_ready() below).
 void* gate_create_channel(const char* name) {
     ensure_ca_context();
 
@@ -232,6 +299,41 @@ int gate_channel_exists(const char* name) {
     return gate_create_channel(name) != NULL;
 }
 
+// Waits briefly for the eager DBE_VALUE subscription's first event, so a channel a
+// downstream client is actually claiming/connecting to (as opposed to just being searched
+// for) doesn't come back "connected" while still guaranteed to fail every get/monitor
+// request until the async upstream connect+subscribe happens to land later -- the common
+// case in short-lived test fixtures, where every test starts against a cold gateway. Gives
+// up after a few seconds regardless (e.g. the upstream PV doesn't exist) rather than
+// blocking this thread forever. Deliberately separate from gate_create_channel() itself:
+// that also runs on the UDP search-reply path (gate_channel_exists()), which must stay fast
+// since the client's own connection-establishment doesn't wait on it at all.
+void gate_wait_channel_ready(void* handle) {
+    GateChannel* gchan = (GateChannel*)handle;
+    std::unique_lock<std::mutex> lock(gchan->readyMutex);
+    // 10s to match this test suite's own standard wait budget (cond.wait(timeout=10.0)),
+    // rather than a shorter, arbitrary value that starts timing out under real system load.
+    gchan->readyCv.wait_for(lock, std::chrono::seconds(10), [&]{ return gchan->ready; });
+}
+
+// Real (CA-wire-ordered, 0..6) native type/element count of the upstream channel, once
+// connected -- used by gateShim.c's dbNameToAddr()/dbChannel_create() so a downstream client
+// is told the record's real type/array size instead of a hardcoded DBR_DOUBLE/1, which broke
+// every non-double and every array/waveform PV (clients that promote their request type from
+// the reported native type, e.g. pyepics, would ask for the wrong representation entirely).
+int gate_native_ca_type(void* handle) {
+    GateChannel* gchan = (GateChannel*)handle;
+    if (!gchan->caChid || ca_state(gchan->caChid) != cs_conn) return -1;
+    return ca_field_type(gchan->caChid);
+}
+
+long gate_native_count(void* handle) {
+    GateChannel* gchan = (GateChannel*)handle;
+    if (!gchan->caChid || ca_state(gchan->caChid) != cs_conn) return 1;
+    long count = ca_element_count(gchan->caChid);
+    return count > 0 ? count : 1;
+}
+
 void gate_delete_channel(void* channel) {}
 
 void* gate_get_as_member(void* handle) {
@@ -244,9 +346,9 @@ int gate_get_count(void* handle, int buffer_type, void* pbuffer, long* nRequest)
     {
         std::lock_guard<std::mutex> lock(gchan->maskMutex);
         if (gchan->maskSubs.empty()) return -1;
-        // Prefer the eager default (DBE_VALUE) subscription for plain gets, since a
-        // DBE_LOG/DBE_ALARM/DBE_PROPERTY-only subscription may have staler data.
-        auto it = gchan->maskSubs.find((unsigned int)DBE_VALUE);
+        // Prefer the eager default subscription for plain gets, since a
+        // DBE_LOG/DBE_ALARM-only subscription may have staler data.
+        auto it = gchan->maskSubs.find(GATE_DEFAULT_MASK);
         if (it == gchan->maskSubs.end()) it = gchan->maskSubs.begin();
         msub = it->second;
     }
@@ -275,19 +377,84 @@ int gate_put(void* channel, int src_type, const void* psrc, long no_elements) {
     return rc;
 }
 
-void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, unsigned int select) {
+struct PutNotifyCtx {
+    gate_put_notify_callback* cb;
+    void* user_arg;
+};
+
+// Runs on the upstream client's own libca callback-dispatch thread (a per-CA-context
+// thread, separate from whatever rsrv server thread called gate_put_notify below) --
+// i.e. genuinely once the upstream IOC has acknowledged the write, not merely once
+// ca_array_put_callback()'s request was queued.
+static void ca_put_notify_cb(struct event_handler_args args) {
+    std::unique_ptr<PutNotifyCtx> ctx((PutNotifyCtx*)args.usr);
+    ctx->cb(ctx->user_arg, args.status == ECA_NORMAL ? 0 : -1);
+}
+
+// Asynchronous put-with-completion-notification: forwards to the upstream IOC via
+// ca_array_put_callback() and invokes `cb` only once that upstream put-notify actually
+// completes (or fails), rather than replying to the downstream client as soon as the
+// write is merely queued. Used for downstream CA_PROTO_WRITE_NOTIFY (wait=True / put
+// callback) requests, which real CA clients rely on to mean "the write has actually
+// taken effect", not just "was accepted for delivery".
+void gate_put_notify(void* channel, int src_type, const void* psrc, long no_elements,
+                      gate_put_notify_callback* cb, void* user_arg) {
+    ensure_ca_context();
+    GateChannel* gchan = (GateChannel*)channel;
+    auto* ctx = new PutNotifyCtx{cb, user_arg};
+    int rc = ca_array_put_callback(src_type, no_elements, gchan->caChid, psrc, ca_put_notify_cb, ctx);
+    if (rc != ECA_NORMAL) {
+        delete ctx;
+        cb(user_arg, -1);
+        return;
+    }
+    ca_flush_io();
+}
+
+void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, void* real_dbchan, unsigned int select) {
     ensure_ca_context();
     GateChannel* gchan = (GateChannel*)channel;
     auto msub = get_or_create_mask_sub(gchan, gchan->caChid, select);
-    auto* usub = new GateChannel::MaskSub::UserSub{(void (*)(void*, void*, int, int, void*))cb, user_arg};
+    auto* usub = new GateChannel::MaskSub::UserSub{(void (*)(void*, void*, int, int, void*))cb, user_arg, real_dbchan, msub.get()};
     {
         std::lock_guard<std::mutex> lock(msub->subsMutex);
         msub->userSubs.push_back(usub);
     }
+    // Every new CA monitor subscription gets one immediate delivery of the channel's current
+    // value, regardless of whether other subscribers already exist for the same upstream mask
+    // (e.g. this downstream client happens to request the same mask as the eager default
+    // subscription set up in ca_conn_cb). Without this, a subscriber joining after that first
+    // upstream event already fired and got cached would never see an initial value at all --
+    // it'd be one event permanently short, since ca_event_cb() only notifies subscribers
+    // present in userSubs *at delivery time*.
+    std::shared_ptr<GateData> data;
+    {
+        std::lock_guard<std::mutex> lock(msub->dataMutex);
+        data = msub->lastData;
+    }
+    if (data) {
+        void* pvalue = (void*)((char*)data->data.data() + dbr_size[data->dbrType] - dbr_value_size[data->dbrType]);
+        usub->cb(usub->user_arg, usub->dbchan, 0, data->count, pvalue);
+    }
     return (void*)usub;
 }
 
-void gate_cancel_event(void* event_id) {}
+// A no-op here (as it was before) would leave a dangling GateChannel::MaskSub::UserSub in
+// msub->userSubs after the downstream client unsubscribes/disconnects and rsrv frees its own
+// per-subscription state -- the next upstream event delivered to that channel would then call
+// back into freed memory (usub->cb/usub->user_arg), corrupting the process. Must actually
+// remove and free the entry.
+void gate_cancel_event(void* event_id) {
+    if (!event_id) return;
+    auto* usub = (GateChannel::MaskSub::UserSub*)event_id;
+    GateChannel::MaskSub* msub = usub->owner;
+    if (msub) {
+        std::lock_guard<std::mutex> lock(msub->subsMutex);
+        auto& v = msub->userSubs;
+        v.erase(std::remove(v.begin(), v.end(), usub), v.end());
+    }
+    delete usub;
+}
 
 void gate_create_client_cmd(const char* name, const char* addr_list, int auto_addr, int port) {
     std::lock_guard<std::mutex> lock(channelsMutex);

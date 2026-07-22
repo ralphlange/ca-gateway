@@ -14,3 +14,6 @@ envPaths
 O.*/
 *.orig
 .iocsh_history
+
+# Python
+*.pyc

@@ -33,26 +33,45 @@ long dbChannelTest(const char *pname) {
     return gate_channel_exists(pname) ? 0 : -1;
 }
 
+/*
+ * Fills in a dbAddr for gh's upstream native type/count. Used both for the plain dbAddr
+ * dbNameToAddr() returns AND for struct dbChannel's embedded .addr member below --
+ * read_reply() in camessage.c (rsrv's real, unmodified monitor/get-reply code) reads
+ * dbch->addr.no_elements directly to size the outgoing message buffer; leaving it
+ * zero-initialized (as plain calloc would) undersizes that buffer for every real event,
+ * corrupting the reply once dbChannel_get_count() (gate_get_count()) writes the real
+ * element count into it -- caServerIO's cas_commit_msg() catches the mismatch via
+ * assert(size <= ntohs(pMsg->m_postsize)) and aborts the process.
+ */
+static void gate_fill_addr(struct dbAddr *paddr, void *gh) {
+    memset(paddr, 0, sizeof(*paddr));
+    int ca_type = gate_native_ca_type(gh);
+    if (ca_type < 0) ca_type = DBR_DOUBLE; /* not connected yet: reasonable fallback */
+    paddr->no_elements = gate_native_count(gh);
+    paddr->field_type = (short)gate_dbr_to_dbf(ca_type);
+    paddr->field_size = dbr_value_size[ca_type];
+    paddr->dbr_field_type = paddr->field_type;
+}
+
 long dbNameToAddr(const char *pname, struct dbAddr *paddr) {
     void* gh = gate_create_channel(pname);
     if (!gh) return -1;
-    memset(paddr, 0, sizeof(*paddr));
-    paddr->no_elements = 1;
-    paddr->field_type = G_S_DBF_DOUBLE;
-    paddr->field_size = sizeof(double);
-    paddr->dbr_field_type = DBR_DOUBLE;
+    gate_wait_channel_ready(gh);
+    gate_fill_addr(paddr, gh);
     return 0;
 }
 
 struct dbChannel * dbChannel_create(const char *name) {
     void* gh = gate_create_channel(name);
     if (!gh) return NULL;
+    gate_wait_channel_ready(gh);
     struct dbChannelGate *gchan = (struct dbChannelGate *)calloc(1, sizeof(struct dbChannelGate));
     gchan->gateHandle = gh;
     strncpy(gchan->name, name, sizeof(gchan->name)-1);
     gchan->chan.name = gchan->name;
-    gchan->chan.final_no_elements = 1;
-    gchan->chan.final_type = DBR_DOUBLE;
+    gate_fill_addr(&gchan->chan.addr, gh);
+    gchan->chan.final_no_elements = gchan->chan.addr.no_elements;
+    gchan->chan.final_type = gchan->chan.addr.field_type;
     return &gchan->chan;
 }
 
@@ -79,26 +98,73 @@ int dbChannel_put(struct dbChannel *chan, int src_type, const void *psrc, long n
     return gate_put(gchan->gateHandle, src_type, psrc, no_elements);
 }
 
-dbEventCtx db_init_events(void) { return (dbEventCtx)1; }
+/*
+ * Used by write_notify_action() (camessage.c) in place of the real dbProcessNotify(),
+ * so a downstream put-with-callback (wait=True) only gets its completion reply once the
+ * upstream IOC has genuinely acknowledged the write.
+ */
+void dbChannel_put_notify(struct dbChannel *chan, int buffer_type, const void *pbuffer,
+                          long no_elements, gate_put_notify_callback *cb, void *user_arg) {
+    struct dbChannelGate *gchan = (struct dbChannelGate *)((char*)chan - offsetof(struct dbChannelGate, chan));
+    gate_put_notify(gchan->gateHandle, buffer_type, pbuffer, no_elements, cb, user_arg);
+}
+
+/*
+ * A real dbEventCtx runs a background "event task" thread that drains queued work
+ * (single-event callbacks, and the "extra labor" queue used for e.g. put-notify
+ * completion replies -- see rsrv_extra_labor() in camessage.c) without blocking the
+ * database. We have no database to protect and no such thread; db_start_events()
+ * already reflects this by invoking its init_func synchronously instead of spawning a
+ * task. For the same reason, db_post_extra_labor() below invokes the registered
+ * extra-labor callback (rsrv_extra_labor) synchronously, right on the calling thread,
+ * instead of queuing it for a background task that doesn't exist -- so it needs a
+ * real per-client struct (not the old shared fake `1` handle) to remember which
+ * function/arg db_add_extra_labor_event() registered.
+ */
+struct GateEventCtx {
+    EXTRALABORFUNC *extraLaborFunc;
+    void *extraLaborArg;
+};
+
+dbEventCtx db_init_events(void) {
+    struct GateEventCtx *ctx = (struct GateEventCtx *)calloc(1, sizeof(struct GateEventCtx));
+    return (dbEventCtx)ctx;
+}
 
 dbEventSubscription db_add_event(dbEventCtx ctx, struct dbChannel *chan, EVENTFUNC* user_sub, void *user_arg, unsigned int select) {
     struct dbChannelGate *gchan = (struct dbChannelGate *)((char*)chan - offsetof(struct dbChannelGate, chan));
-    return (dbEventSubscription)gate_add_event(gchan->gateHandle, (gate_event_callback*)user_sub, user_arg, select);
+    /* user_sub is really rsrv's read_reply(pArg, dbChannel*, eventsRemaining, db_field_log*);
+     * it must be invoked with the real dbChannel* (chan) -- NOT our internal handle -- since
+     * read_reply() calls dbChannel_get_count(dbch, ...), which does pointer arithmetic on
+     * dbch assuming it's really the `chan` member embedded in a dbChannelGate. */
+    return (dbEventSubscription)gate_add_event(gchan->gateHandle, (gate_event_callback*)user_sub, user_arg, chan, select);
 }
 
 void db_cancel_event(dbEventSubscription sub) { gate_cancel_event((void*)sub); }
-void db_close_events(dbEventCtx ctx) {}
+void db_close_events(dbEventCtx ctx) { free(ctx); }
 void db_event_enable(dbEventSubscription sub) {}
 void db_event_disable(dbEventSubscription sub) {}
 void db_post_single_event(dbEventSubscription sub) {}
-int db_post_extra_labor(dbEventCtx ctx) { return 0; }
+int db_post_extra_labor(dbEventCtx ctx) {
+    struct GateEventCtx *gctx = (struct GateEventCtx *)ctx;
+    if (gctx && gctx->extraLaborFunc) gctx->extraLaborFunc(gctx->extraLaborArg);
+    return 0;
+}
 /*
- * dbEventCtx here is always the fake, non-NULL handle from db_init_events() above, not a
- * real event_user*. The real dbEvent.c versions of these dereference ctx and crash; since
- * db_post_extra_labor()/db_close_events() are already no-ops above (nothing ever actually
- * queues/delivers the extra-labor callback or changes priority), these are safe no-ops too.
+ * dbEventCtx here is always the real per-client GateEventCtx* from db_init_events()
+ * above, not a real event_user* -- the real dbEvent.c versions of these dereference a
+ * different struct entirely and would crash. db_event_enable/disable and
+ * db_post_single_event are safe no-ops since nothing in gate_add_event()'s delivery
+ * path checks an enabled/disabled flag.
  */
-int db_add_extra_labor_event(dbEventCtx ctx, EXTRALABORFUNC *func, void *arg) { return DB_EVENT_OK; }
+int db_add_extra_labor_event(dbEventCtx ctx, EXTRALABORFUNC *func, void *arg) {
+    struct GateEventCtx *gctx = (struct GateEventCtx *)ctx;
+    if (gctx) {
+        gctx->extraLaborFunc = func;
+        gctx->extraLaborArg = arg;
+    }
+    return DB_EVENT_OK;
+}
 void db_flush_extra_labor_event(dbEventCtx ctx) {}
 void db_event_flow_ctrl_mode_on(dbEventCtx ctx) {}
 void db_event_flow_ctrl_mode_off(dbEventCtx ctx) {}

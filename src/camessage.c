@@ -1,5 +1,6 @@
 #include "gate_compat.h"
 #include "gate_compat.h"
+#include "gate_db_interface.h"
 /*************************************************************************\
 * Copyright (c) 2010 Brookhaven National Laboratory.
 * Copyright (c) 2010 Helmholtz-Zentrum Berlin
@@ -1352,6 +1353,23 @@ static int claim_ciu_action ( caHdrLargeArray *mp,
 }
 
 /*
+ * gate_write_notify_complete()
+ *
+ * gate_put_notify()'s completion callback (invoked via dbChannel_put_notify(), in
+ * place of the real dbProcessNotify() -- see write_notify_action() below). Fires on
+ * the upstream client's own libca callback-dispatch thread once the upstream IOC has
+ * actually acknowledged the put, not merely once it was queued. Calling
+ * write_notify_done_callback() from here, cross-thread, is exactly what a real IOC's
+ * dbProcessNotify() does too (from its own db callback thread), so it's already
+ * designed to be safe to invoke this way.
+ */
+static void gate_write_notify_complete(void *user_arg, int status) {
+    processNotify *ppn = (processNotify *) user_arg;
+    ppn->status = (status == 0) ? notifyOK : notifyError;
+    write_notify_done_callback(ppn);
+}
+
+/*
  * write_notify_reply()
  * (called by the CA server event task via the extra labor interface)
  */
@@ -1748,7 +1766,19 @@ static int write_notify_action ( caHdrLargeArray *mp, void *pPayload,
         pciu->dbch, mp->m_dataType, mp->m_count,
         pciu->pPutNotify->pbuffer );
 
-    dbProcessNotify(&pciu->pPutNotify->dbPutNotify);
+    /* dbProcessNotify() (real dbNotify.c) dereferences dbChannelRecord(chan) --
+     * always NULL for our proxied GateChannel-backed dbChannel, since there is no
+     * real local record. Skip it entirely and forward the put upstream via CA's
+     * own put-notify (ca_array_put_callback, through dbChannel_put_notify() /
+     * gate_put_notify()) instead: gate_write_notify_complete() below only drives
+     * the normal reply path (write_notify_done_callback(), same as a real IOC's
+     * dbProcessNotify() would eventually do) once the *upstream* IOC has actually
+     * acknowledged the write -- not merely once it was queued -- so a downstream
+     * wait=True/put-callback client gets a reply that genuinely reflects whether
+     * the write took effect. */
+    dbChannel_put_notify ( pciu->dbch, pciu->pPutNotify->dbrType,
+        pciu->pPutNotify->pbuffer, pciu->pPutNotify->nRequest,
+        gate_write_notify_complete, &pciu->pPutNotify->dbPutNotify );
 
     return RSRV_OK;
 }
