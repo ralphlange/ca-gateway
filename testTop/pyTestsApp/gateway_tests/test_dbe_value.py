@@ -28,7 +28,9 @@ def test_value_no_deadband(standard_env: conftest.EnvironmentInfo):
     ioc.get()
     gw.get()
 
-    for val in range(10):
+    # Start from 1, not 0: passive0's default VAL is already 0, so a put of 0 would be a
+    # no-op (no real value change, hence no event) rather than one of the 10 intended changes.
+    for val in range(1, 11):
         ioc.put(val, wait=True)
 
     # We get 11 events: at connection, then at 10 value changes (puts)

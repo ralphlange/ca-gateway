@@ -11,7 +11,12 @@ void gate_wait_channel_ready(void* handle);
 int gate_native_ca_type(void* handle);
 long gate_native_count(void* handle);
 void gate_delete_channel(void* channel);
-int gate_get_count(void* channel, int buffer_type, void* pbuffer, long* nRequest);
+// pfl mirrors real EPICS Base's db_field_log: NULL for a plain get (uses the eager default
+// mask's cached data); for a monitor-triggered call (via gate_event_callback below), the
+// GateData* snapshot of the specific event being delivered -- see GateLogic.cpp for why this
+// matters (a non-default-mask event, e.g. a bare DBE_ALARM severity transition, never touches
+// the default mask's own cache at all).
+int gate_get_count(void* channel, int buffer_type, void* pbuffer, long* nRequest, void* pfl);
 int gate_put(void* channel, int src_type, const void* psrc, long no_elements);
 // Async put-with-completion: `cb` fires once the upstream IOC's own put-notify actually
 // completes (status 0) or fails (status -1) -- not merely once the write was queued.
@@ -23,7 +28,10 @@ void gate_put_notify(void* channel, int src_type, const void* psrc, long no_elem
 struct dbChannel;
 void dbChannel_put_notify(struct dbChannel* chan, int buffer_type, const void* pbuffer,
                            long no_elements, gate_put_notify_callback* cb, void* user_arg);
-typedef void (gate_event_callback)(void* user_arg, void* channel, int dbrType, int count, void* pbuffer);
+// Matches rsrv's real EVENTFUNC/read_reply signature (pArg, dbChannel*, eventsRemaining,
+// db_field_log*) exactly -- `channel` is really a struct dbChannel*, and the last argument is
+// really a GateData* (see GateLogic.cpp's gate_get_count()), not a raw value pointer.
+typedef void (gate_event_callback)(void* user_arg, void* channel, int eventsRemaining, void* pfl);
 void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, void* real_dbchan, unsigned int select);
 void gate_cancel_event(void* event_id);
 void gate_create_client_cmd(const char* name, const char* addr_list, int auto_addr, int port);

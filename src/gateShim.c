@@ -108,7 +108,7 @@ void dbChannelShow(dbChannel *chan, int level, unsigned short indent) {}
 
 int dbChannel_get_count(struct dbChannel *chan, int buffer_type, void *pbuffer, long *nRequest, void *pfl) {
     struct dbChannelGate *gchan = (struct dbChannelGate *)((char*)chan - offsetof(struct dbChannelGate, chan));
-    return gate_get_count(gchan->gateHandle, buffer_type, pbuffer, nRequest);
+    return gate_get_count(gchan->gateHandle, buffer_type, pbuffer, nRequest, pfl);
 }
 
 int dbChannel_get(struct dbChannel *chan, int buffer_type, void *pbuffer, long no_elements, void *pfl) {

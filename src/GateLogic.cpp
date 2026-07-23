@@ -83,15 +83,23 @@ struct GateChannel {
         unsigned int mask = 0;
         struct GateChannel* gchan = nullptr;
         std::shared_ptr<GateData> lastData;
-        std::mutex dataMutex;
         struct UserSub {
-            void (*cb)(void*, void*, int, int, void*);
+            void (*cb)(void*, void*, int, void*);
             void* user_arg;
             void* dbchan; // the real struct dbChannel* rsrv gave db_add_event(), NOT this MaskSub
             struct MaskSub* owner; // so gate_cancel_event() can find+erase itself
         };
         std::vector<UserSub*> userSubs;
-        std::mutex subsMutex;
+        // Guards both lastData and userSubs together (not two separate mutexes): ca_event_cb()
+        // ("record the new value, then deliver to whoever is currently subscribed") and
+        // gate_add_event() ("register a subscriber, then deliver the current value to it if
+        // any") must each run as one atomic step with respect to the other, or a subscriber
+        // that registers in the gap between "set lastData" and "iterate userSubs" can be
+        // delivered the same event twice -- once by ca_event_cb's loop (which already sees it
+        // in userSubs) and once by gate_add_event's own immediate-delivery fallback (which now
+        // sees the just-updated lastData). Seen in practice for freshly-created, non-default
+        // mask subscriptions (e.g. a bare DBE_ALARM monitor) against a fast loopback upstream.
+        std::mutex mtx;
     };
     std::map<unsigned int, std::shared_ptr<MaskSub>> maskSubs;
     std::mutex maskMutex;
@@ -155,10 +163,11 @@ static void ca_meta_cb(struct event_handler_args args) {
         gate_format_extract_meta(dbf, args.dbr, &ctx->gchan->meta);
     }
     if (ctx->msub && ctx->data) {
-        std::lock_guard<std::mutex> lock(ctx->msub->subsMutex);
+        std::lock_guard<std::mutex> lock(ctx->msub->mtx);
         for (auto usub : ctx->msub->userSubs) {
-            void* pvalue = (void*)((char*)ctx->data->data.data() + dbr_size[ctx->data->dbrType] - dbr_value_size[ctx->data->dbrType]);
-            usub->cb(usub->user_arg, usub->dbchan, 0, ctx->data->count, pvalue);
+            // See ca_event_cb()'s comment: pass ctx->data itself as the "db_field_log" argument
+            // so gate_get_count() serves this specific (deferred) event's own data.
+            usub->cb(usub->user_arg, usub->dbchan, 0, (void*)ctx->data.get());
         }
     }
 }
@@ -184,9 +193,29 @@ static void ca_event_cb(struct event_handler_args args) {
     newData->data.assign((char*)args.dbr, (char*)args.dbr + sz);
     int dbf = gate_dbr_to_dbf(args.type);
     gate_format_extract_time(dbf, args.dbr, &newData->status, &newData->severity, &newData->stamp);
+    bool isProperty = (msub->mask & DBE_PROPERTY) != 0;
     {
-        std::lock_guard<std::mutex> lock(msub->dataMutex);
+        // See MaskSub::mtx's comment: setting lastData and delivering to the current
+        // userSubs must happen as one atomic step (skipped here for a DBE_PROPERTY mask,
+        // whose delivery is deferred to ca_meta_cb instead -- see below).
+        std::lock_guard<std::mutex> lock(msub->mtx);
         msub->lastData = newData;
+        if (!isProperty) {
+            for (auto usub : msub->userSubs) {
+                // usub->cb is really rsrv's read_reply(pArg, dbChannel*, eventsRemaining,
+                // db_field_log*): pass the real dbChannel* (not msub), eventsRemaining=0 (so
+                // its `if (!eventsRemaining) cas_send_bs_msg(...)` actually flushes this event
+                // promptly), and newData itself as the 4th ("db_field_log") argument -- read_reply
+                // forwards it unchanged into dbChannel_get_count()/gate_get_count(), which must
+                // use THIS event's own data instead of whatever's cached for the *default* mask
+                // (GATE_DEFAULT_MASK): a DBE_ALARM/DBE_LOG-only event (e.g. a pure severity
+                // transition with no accompanying value change) never touches the default
+                // DBE_VALUE|DBE_PROPERTY subscription's own cache at all, so falling back to it
+                // silently re-delivers stale status/severity for every mask other than the
+                // default one.
+                usub->cb(usub->user_arg, usub->dbchan, 0, (void*)newData.get());
+            }
+        }
     }
     if (msub->mask == GATE_DEFAULT_MASK) {
         GateChannel* gchan = msub->gchan;
@@ -196,21 +225,12 @@ static void ca_event_cb(struct event_handler_args args) {
             gchan->readyCv.notify_all();
         }
     }
-    if (msub->mask & DBE_PROPERTY) {
+    if (isProperty) {
         // A property change may have altered limits/precision/units/enum strings upstream;
         // defer this event's delivery until the refreshed metadata actually lands (see
         // refresh_static_meta()'s comment) instead of notifying subscribers immediately with
         // what could still be the old cached values.
         refresh_static_meta(msub->gchan, msub->gchan->caChid, msub, newData);
-        return;
-    }
-    std::lock_guard<std::mutex> lock(msub->subsMutex);
-    for (auto usub : msub->userSubs) {
-        void* pvalue = (void*)((char*)newData->data.data() + dbr_size[newData->dbrType] - dbr_value_size[newData->dbrType]);
-        // usub->cb is really rsrv's read_reply(pArg, dbChannel*, eventsRemaining, db_field_log*):
-        // pass the real dbChannel* (not msub) and eventsRemaining=0 (so its
-        // `if (!eventsRemaining) cas_send_bs_msg(...)` actually flushes this event promptly).
-        usub->cb(usub->user_arg, usub->dbchan, 0, newData->count, pvalue);
     }
 }
 
@@ -387,23 +407,38 @@ void* gate_get_as_member(void* handle) {
     return (void*)((GateChannel*)handle)->asMember;
 }
 
-int gate_get_count(void* handle, int buffer_type, void* pbuffer, long* nRequest) {
+// `pfl` mirrors real EPICS Base's db_field_log mechanism: when a monitor event's own
+// read_reply() call flows through here (see ca_event_cb()/ca_meta_cb()'s comments), it's a
+// GateData* snapshot of exactly the event that triggered this delivery, and must be used
+// as-is -- falling back to "whatever's cached for the default mask" (as this function used to
+// do unconditionally) silently serves stale/wrong status-severity for any event delivered on
+// a non-default mask that never itself touches the default DBE_VALUE|DBE_PROPERTY
+// subscription's own cache (e.g. a DBE_ALARM-only severity transition with no value change).
+// `pfl` is NULL for plain (non-monitor) gets (e.g. read_notify_action's call, camessage.c),
+// which keeps the previous "prefer the eager default subscription" behavior.
+int gate_get_count(void* handle, int buffer_type, void* pbuffer, long* nRequest, void* pfl) {
     GateChannel* gchan = (GateChannel*)handle;
-    std::shared_ptr<GateChannel::MaskSub> msub;
-    {
-        std::lock_guard<std::mutex> lock(gchan->maskMutex);
-        if (gchan->maskSubs.empty()) return -1;
-        // Prefer the eager default subscription for plain gets, since a
-        // DBE_LOG/DBE_ALARM-only subscription may have staler data.
-        auto it = gchan->maskSubs.find(GATE_DEFAULT_MASK);
-        if (it == gchan->maskSubs.end()) it = gchan->maskSubs.begin();
-        msub = it->second;
-    }
     std::shared_ptr<GateData> data;
-    {
-        std::lock_guard<std::mutex> lock(msub->dataMutex);
-        if (!msub->lastData) return -1;
-        data = msub->lastData;
+    if (pfl) {
+        // Non-owning: the caller (ca_event_cb/ca_meta_cb) keeps its own shared_ptr alive for
+        // the full, synchronous duration of this call chain.
+        data = std::shared_ptr<GateData>((GateData*)pfl, [](GateData*){});
+    } else {
+        std::shared_ptr<GateChannel::MaskSub> msub;
+        {
+            std::lock_guard<std::mutex> lock(gchan->maskMutex);
+            if (gchan->maskSubs.empty()) return -1;
+            // Prefer the eager default subscription for plain gets, since a
+            // DBE_LOG/DBE_ALARM-only subscription may have staler data.
+            auto it = gchan->maskSubs.find(GATE_DEFAULT_MASK);
+            if (it == gchan->maskSubs.end()) it = gchan->maskSubs.begin();
+            msub = it->second;
+        }
+        {
+            std::lock_guard<std::mutex> lock(msub->mtx);
+            if (!msub->lastData) return -1;
+            data = msub->lastData;
+        }
     }
     GateStaticMeta meta;
     {
@@ -462,11 +497,7 @@ void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, voi
     ensure_ca_context();
     GateChannel* gchan = (GateChannel*)channel;
     auto msub = get_or_create_mask_sub(gchan, gchan->caChid, select);
-    auto* usub = new GateChannel::MaskSub::UserSub{(void (*)(void*, void*, int, int, void*))cb, user_arg, real_dbchan, msub.get()};
-    {
-        std::lock_guard<std::mutex> lock(msub->subsMutex);
-        msub->userSubs.push_back(usub);
-    }
+    auto* usub = new GateChannel::MaskSub::UserSub{(void (*)(void*, void*, int, void*))cb, user_arg, real_dbchan, msub.get()};
     // Every new CA monitor subscription gets one immediate delivery of the channel's current
     // value, regardless of whether other subscribers already exist for the same upstream mask
     // (e.g. this downstream client happens to request the same mask as the eager default
@@ -474,14 +505,21 @@ void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, voi
     // upstream event already fired and got cached would never see an initial value at all --
     // it'd be one event permanently short, since ca_event_cb() only notifies subscribers
     // present in userSubs *at delivery time*.
+    //
+    // Registering usub and snapshotting lastData must happen as one atomic step (same mutex
+    // ca_event_cb() uses for "set lastData, deliver to current userSubs") -- otherwise a
+    // concurrent event landing between the two would be delivered twice: once by
+    // ca_event_cb()'s loop, which would already see usub in userSubs, and once by the
+    // immediate-delivery fallback below, which would see that same event's data as lastData.
     std::shared_ptr<GateData> data;
     {
-        std::lock_guard<std::mutex> lock(msub->dataMutex);
+        std::lock_guard<std::mutex> lock(msub->mtx);
+        msub->userSubs.push_back(usub);
         data = msub->lastData;
     }
     if (data) {
-        void* pvalue = (void*)((char*)data->data.data() + dbr_size[data->dbrType] - dbr_value_size[data->dbrType]);
-        usub->cb(usub->user_arg, usub->dbchan, 0, data->count, pvalue);
+        // See ca_event_cb()'s comment: pass data itself as the "db_field_log" argument.
+        usub->cb(usub->user_arg, usub->dbchan, 0, (void*)data.get());
     }
     return (void*)usub;
 }
@@ -496,7 +534,7 @@ void gate_cancel_event(void* event_id) {
     auto* usub = (GateChannel::MaskSub::UserSub*)event_id;
     GateChannel::MaskSub* msub = usub->owner;
     if (msub) {
-        std::lock_guard<std::mutex> lock(msub->subsMutex);
+        std::lock_guard<std::mutex> lock(msub->mtx);
         auto& v = msub->userSubs;
         v.erase(std::remove(v.begin(), v.end(), usub), v.end());
     }

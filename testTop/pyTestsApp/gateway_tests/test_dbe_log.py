@@ -44,13 +44,15 @@ def test_log_deadband(standard_env: conftest.EnvironmentInfo):
     for val in range(35):
         ioc.put(val, wait=True)
 
-    # We get 5 events: at connection, first put, then at 11 22 33
+    # We get 4 events: at connection (VAL=0), then at 11, 22, 33 -- ADEL=10 measures each
+    # deadband crossing against the last *archived* value, which the connection event already
+    # set to 0; the first put (val=0) is a no-op (no real value change) and doesn't count.
     with cond:
-        while events_received < 5:
+        while events_received < 4:
             assert cond.wait(timeout=10.0)
     assert (
-        events_received == 5
-    ), f"events expected: 5; events received: {events_received}"
+        events_received == 4
+    ), f"events expected: 4; events received: {events_received}"
 
     # no more events expected
     with cond:
