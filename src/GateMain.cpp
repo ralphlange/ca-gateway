@@ -21,10 +21,16 @@ static const iocshArg * const ldAs[] = { &ldA0 };
 static const iocshFuncDef ldDef = { "gateLoadConfig", 1, ldAs, "Load JSON config" };
 static void ldCall(const iocshArgBuf *a) { gate_load_config(a[0].sval); }
 
+static const iocshArg laA0 = { "filename", iocshArgString };
+static const iocshArg * const laAs[] = { &laA0 };
+static const iocshFuncDef laDef = { "gateLoadAccess", 1, laAs, "Load access security (ACF) file" };
+static void laCall(const iocshArgBuf *a) { gate_load_access(a[0].sval); }
+
 void gateIocRegister(void) {
     iocshRegister(&clDef, clCall);
     iocshRegister(&pvDef, pvCall);
     iocshRegister(&ldDef, ldCall);
+    iocshRegister(&laDef, laCall);
 }
 }
 

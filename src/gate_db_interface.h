@@ -28,8 +28,19 @@ void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, voi
 void gate_cancel_event(void* event_id);
 void gate_create_client_cmd(const char* name, const char* addr_list, int auto_addr, int port);
 void gate_add_pv_cmd(const char* pattern, const char* client_name, const char* as_group, const char* target);
+// Adds a DENY route: hosts_csv empty = blanket deny (hidden from every client); otherwise a
+// comma-separated host list -- matched by exact string against the client's self-reported CA
+// HOST_NAME (same convention as HAG matching, see gate_asCheckClientIP), denying only those
+// hosts while other clients still see whatever an ALLOW/ALIAS route grants for the same name.
+void gate_add_deny_cmd(const char* pattern, const char* hosts_csv);
 void gate_load_config(const char* filename);
+// Loads an ACF (access security) file via asInitFile(); see GateLogic.cpp for details.
+void gate_load_access(const char* filename);
 void* gate_get_as_member(void* handle);
+// Claim-time channel lookup, host-aware: hostname is the requesting client's self-reported
+// CA HOST_NAME (NULL if unknown), used to evaluate DENY FROM routes even against an
+// already-cached channel. gate_create_channel(name) is gate_create_channel_for_client(name, NULL).
+void* gate_create_channel_for_client(const char* name, const char* hostname);
 #ifdef __cplusplus
 }
 #endif

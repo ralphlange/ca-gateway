@@ -108,7 +108,10 @@ struct GateChannel {
 
     GateChannel(const char* name, const char* upstream_name, const char* as_group) : name(name), caChid(NULL), asMember(NULL) {
         ca_create_channel(upstream_name, ca_conn_cb, this, 20, &caChid);
-        asAddMember(&asMember, as_group);
+        long as_status = asAddMember(&asMember, as_group);
+        if (as_status && as_status != S_asLib_asNotActive)
+            errlogPrintf("GateChannel: asAddMember('%s', as_group='%s') failed (status=%ld)\n",
+                         name, as_group, as_status);
     }
 };
 
@@ -121,6 +124,11 @@ struct Route {
     std::string client_name;
     std::string as_group;
     std::string target; // optional PCRE2 $1-style rewrite of the upstream name; empty = same name
+    // A DENY route (legacy pvlist DENY/DENY FROM, not ASG/UAG/HAG): controls whether a channel
+    // can be claimed at all, not read/write rights on an existing one. deny=false for ordinary
+    // ALLOW/ALIAS routes.
+    bool deny = false;
+    std::vector<std::string> deny_hosts; // deny==true && empty => blanket; else DENY FROM list
 };
 static std::vector<Route> routes;
 static std::mutex routesMutex;
@@ -255,44 +263,83 @@ void gate_init(void) {
     g_ca_ctx = ca_current_context();
 }
 
-// Finds or creates the GateChannel for `name`, but never blocks: used both by the fast
-// UDP-search-reply path (gate_channel_exists(), which only needs a yes/no route match) and
-// as the first half of the TCP claim-channel path (see gate_wait_channel_ready() below).
-void* gate_create_channel(const char* name) {
-    ensure_ca_context();
+struct RouteMatch {
+    bool has_allow = false;
+    bool denied = false; // blanket DENY, or DENY FROM matching the given hostname
+    const Route* allow_route = nullptr; // valid only while routesMutex is held
+};
 
-    std::lock_guard<std::mutex> lock(channelsMutex);
-    auto it = channels.find(name);
-    if (it != channels.end()) return (void*)it->second.get();
-
-    std::lock_guard<std::mutex> rlock(routesMutex);
+// Scans *all* routes matching `name` (not first-match) and combines them: a blanket DENY
+// (or a DENY FROM whose host list contains `hostname`) sets denied=true regardless of any
+// ALLOW/ALIAS match, modeling this codebase's only usage of "EVALUATION ORDER ALLOW, DENY"
+// (deny overrides allow when both match a name). `hostname` NULL means "unknown" (the
+// anonymous UDP search path): DENY FROM never matches in that case, since we can't yet tell
+// which client is asking -- only a blanket DENY can hide a name at search time.
+static RouteMatch match_routes_locked(const char* name, const char* hostname) {
+    RouteMatch result;
     for (const auto& route : routes) {
         pcre2_match_data* match_data = pcre2_match_data_create_from_pattern(route.re, NULL);
         int rc = pcre2_match(route.re, (PCRE2_SPTR)name, strlen(name), 0, 0, match_data, NULL);
         pcre2_match_data_free(match_data);
-        if (rc >= 0) {
-            std::string upstream_name = name;
-            if (!route.target.empty()) {
-                PCRE2_UCHAR outbuf[512];
-                PCRE2_SIZE outlen = sizeof(outbuf) / sizeof(PCRE2_UCHAR);
-                int rc2 = pcre2_substitute(route.re, (PCRE2_SPTR)name, strlen(name), 0,
-                                           0, NULL, NULL,
-                                           (PCRE2_SPTR)route.target.c_str(), route.target.size(),
-                                           outbuf, &outlen);
-                if (rc2 >= 0) {
-                    upstream_name.assign((const char*)outbuf, outlen);
-                } else {
-                    errlogPrintf("gate_create_channel: pcre2_substitute failed (%d) for '%s' -> '%s', using unmodified name\n",
-                                 rc2, name, route.target.c_str());
+        if (rc < 0) continue;
+        if (route.deny) {
+            if (route.deny_hosts.empty()) {
+                result.denied = true;
+            } else if (hostname) {
+                for (const auto& h : route.deny_hosts) {
+                    if (h == hostname) { result.denied = true; break; }
                 }
             }
-            auto gchan = std::make_shared<GateChannel>(name, upstream_name.c_str(), route.as_group.c_str());
-            channels[name] = gchan;
-            ca_flush_io();
-            return (void*)gchan.get();
+        } else {
+            result.has_allow = true;
+            result.allow_route = &route;
         }
     }
-    return NULL;
+    return result;
+}
+
+// Finds or creates the GateChannel for `name`, but never blocks: used both by the fast
+// UDP-search-reply path (gate_channel_exists(), which only needs a yes/no route match, always
+// with hostname=NULL) and as the first half of the TCP claim-channel path (see
+// gate_wait_channel_ready() below), where gateShim.c passes the requesting client's
+// self-reported hostname so a DENY FROM route can hide an otherwise-cached channel from just
+// that client. Routes are re-evaluated even on a channels-map cache hit -- a cache hit must
+// not bypass the per-client DENY FROM check.
+void* gate_create_channel_for_client(const char* name, const char* hostname) {
+    ensure_ca_context();
+
+    std::lock_guard<std::mutex> lock(channelsMutex);
+    std::lock_guard<std::mutex> rlock(routesMutex);
+    RouteMatch m = match_routes_locked(name, hostname);
+    if (!m.has_allow || m.denied) return NULL;
+
+    auto it = channels.find(name);
+    if (it != channels.end()) return (void*)it->second.get();
+
+    const Route& route = *m.allow_route;
+    std::string upstream_name = name;
+    if (!route.target.empty()) {
+        PCRE2_UCHAR outbuf[512];
+        PCRE2_SIZE outlen = sizeof(outbuf) / sizeof(PCRE2_UCHAR);
+        int rc2 = pcre2_substitute(route.re, (PCRE2_SPTR)name, strlen(name), 0,
+                                   0, NULL, NULL,
+                                   (PCRE2_SPTR)route.target.c_str(), route.target.size(),
+                                   outbuf, &outlen);
+        if (rc2 >= 0) {
+            upstream_name.assign((const char*)outbuf, outlen);
+        } else {
+            errlogPrintf("gate_create_channel: pcre2_substitute failed (%d) for '%s' -> '%s', using unmodified name\n",
+                         rc2, name, route.target.c_str());
+        }
+    }
+    auto gchan = std::make_shared<GateChannel>(name, upstream_name.c_str(), route.as_group.c_str());
+    channels[name] = gchan;
+    ca_flush_io();
+    return (void*)gchan.get();
+}
+
+void* gate_create_channel(const char* name) {
+    return gate_create_channel_for_client(name, NULL);
 }
 
 int gate_channel_exists(const char* name) {
@@ -468,8 +515,13 @@ void gate_add_pv_cmd(const char* pattern, const char* client_name, const char* a
     PCRE2_SIZE erroroffset;
     pcre2_code* re = pcre2_compile((PCRE2_SPTR)pattern, PCRE2_ZERO_TERMINATED, 0, &error, &erroroffset, NULL);
     if (re) {
+        Route route;
+        route.re = re;
+        route.client_name = client_name ? client_name : "";
+        route.as_group = as_group ? as_group : "";
+        route.target = target ? target : "";
         std::lock_guard<std::mutex> lock(routesMutex);
-        routes.push_back({re, client_name, as_group ? as_group : "", target ? target : ""});
+        routes.push_back(route);
         errlogPrintf("gate_add_pv_cmd: route added: pattern='%s' client='%s' as_group='%s' target='%s'\n",
                      pattern, client_name, as_group ? as_group : "", target ? target : "");
     } else {
@@ -477,10 +529,44 @@ void gate_add_pv_cmd(const char* pattern, const char* client_name, const char* a
     }
 }
 
+// Splits a comma-separated host list (whitespace around each token trimmed); empty tokens
+// dropped. `hosts_csv` empty/NULL yields an empty vector (blanket deny).
+static std::vector<std::string> split_csv_trimmed(const char* hosts_csv) {
+    std::vector<std::string> out;
+    if (!hosts_csv) return out;
+    std::istringstream iss(hosts_csv);
+    std::string token;
+    while (std::getline(iss, token, ',')) {
+        size_t b = token.find_first_not_of(" \t");
+        size_t e = token.find_last_not_of(" \t");
+        if (b == std::string::npos) continue;
+        out.push_back(token.substr(b, e - b + 1));
+    }
+    return out;
+}
+
+void gate_add_deny_cmd(const char* pattern, const char* hosts_csv) {
+    int error;
+    PCRE2_SIZE erroroffset;
+    pcre2_code* re = pcre2_compile((PCRE2_SPTR)pattern, PCRE2_ZERO_TERMINATED, 0, &error, &erroroffset, NULL);
+    if (re) {
+        Route route;
+        route.re = re;
+        route.deny = true;
+        route.deny_hosts = split_csv_trimmed(hosts_csv);
+        std::lock_guard<std::mutex> lock(routesMutex);
+        routes.push_back(route);
+        errlogPrintf("gate_add_deny_cmd: deny route added: pattern='%s' hosts='%s'\n",
+                     pattern, hosts_csv ? hosts_csv : "(blanket)");
+    } else {
+        errlogPrintf("gate_add_deny_cmd: failed to compile pattern '%s' (pcre2 error %d)\n", pattern, error);
+    }
+}
+
 namespace {
 
 struct ConfigParseCtx {
-    enum Ctx { CTX_ROOT_OBJ, CTX_CLIENTS_ARRAY, CTX_CLIENT_OBJ, CTX_PVS_ARRAY, CTX_PV_OBJ, CTX_OTHER };
+    enum Ctx { CTX_ROOT_OBJ, CTX_CLIENTS_ARRAY, CTX_CLIENT_OBJ, CTX_PVS_ARRAY, CTX_PV_OBJ, CTX_HOSTS_ARRAY, CTX_OTHER };
     std::vector<Ctx> stack;
     std::string key;
 
@@ -491,6 +577,10 @@ struct ConfigParseCtx {
 
     std::string pattern, client_name, as_group, target;
     bool has_pattern, has_client;
+    // A pv entry with "action":"deny" carries an optional "hosts":[...] list instead of
+    // client/as_group/target -- see gate_add_deny_cmd().
+    bool is_deny;
+    std::vector<std::string> hosts;
 
     Ctx top() const { return stack.back(); }
 };
@@ -507,6 +597,7 @@ int cb_start_map(void* vctx) {
         ctx->stack.push_back(ConfigParseCtx::CTX_PV_OBJ);
         ctx->pattern.clear(); ctx->client_name.clear(); ctx->as_group = "DEFAULT"; ctx->target.clear();
         ctx->has_pattern = false; ctx->has_client = false;
+        ctx->is_deny = false; ctx->hosts.clear();
     } else {
         ctx->stack.push_back(ConfigParseCtx::CTX_OTHER);
     }
@@ -519,6 +610,13 @@ int cb_end_map(void* vctx) {
     ctx->stack.pop_back();
     if (t == ConfigParseCtx::CTX_CLIENT_OBJ && ctx->has_name) {
         gate_create_client_cmd(ctx->name.c_str(), ctx->addr_list.c_str(), ctx->auto_addr ? 1 : 0, ctx->port);
+    } else if (t == ConfigParseCtx::CTX_PV_OBJ && ctx->has_pattern && ctx->is_deny) {
+        std::string hosts_csv;
+        for (size_t i = 0; i < ctx->hosts.size(); ++i) {
+            if (i) hosts_csv += ",";
+            hosts_csv += ctx->hosts[i];
+        }
+        gate_add_deny_cmd(ctx->pattern.c_str(), hosts_csv.c_str());
     } else if (t == ConfigParseCtx::CTX_PV_OBJ && ctx->has_pattern && ctx->has_client) {
         gate_add_pv_cmd(ctx->pattern.c_str(), ctx->client_name.c_str(), ctx->as_group.c_str(), ctx->target.c_str());
     }
@@ -531,6 +629,8 @@ int cb_start_array(void* vctx) {
         ctx->stack.push_back(ConfigParseCtx::CTX_CLIENTS_ARRAY);
     } else if (ctx->top() == ConfigParseCtx::CTX_ROOT_OBJ && ctx->key == "pvs") {
         ctx->stack.push_back(ConfigParseCtx::CTX_PVS_ARRAY);
+    } else if (ctx->top() == ConfigParseCtx::CTX_PV_OBJ && ctx->key == "hosts") {
+        ctx->stack.push_back(ConfigParseCtx::CTX_HOSTS_ARRAY);
     } else {
         ctx->stack.push_back(ConfigParseCtx::CTX_OTHER);
     }
@@ -560,6 +660,9 @@ int cb_string(void* vctx, const unsigned char* val, size_t len) {
         else if (ctx->key == "client") { ctx->client_name = s; ctx->has_client = true; }
         else if (ctx->key == "as_group") ctx->as_group = s;
         else if (ctx->key == "target") ctx->target = s;
+        else if (ctx->key == "action") ctx->is_deny = (s == "deny");
+    } else if (ctx->top() == ConfigParseCtx::CTX_HOSTS_ARRAY) {
+        ctx->hosts.push_back(s);
     }
     return 1;
 }
@@ -591,6 +694,19 @@ const yajl_callbacks configCallbacks = {
 };
 
 } // namespace
+
+// Loads an EPICS access security (ACF) file via the real libCom asLib, flipping on
+// asActive -- until this is called, asCheckGet/asCheckPut/asAddClient/asAddMember (all
+// vendored, unmodified rsrv/asLib code, already wired to GateChannel::asMember via
+// asDbGetMemberPvt() in gateShim.c) short-circuit to "allow everything" (see CLAUDE.md).
+void gate_load_access(const char* filename) {
+    long status = asInitFile(filename, "");
+    if (status) {
+        errlogPrintf("gate_load_access: asInitFile('%s') failed (status=%ld)\n", filename, status);
+    } else {
+        errlogPrintf("gate_load_access: '%s' loaded successfully\n", filename);
+    }
+}
 
 void gate_load_config(const char* filename) {
     std::ifstream ifs(filename);

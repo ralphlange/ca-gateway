@@ -12,10 +12,12 @@ and described in `README.md`/`docs/Gateway.html`) with one built directly on EPI
 limits/precision/units/enum-strings (see Architecture below) — this was added specifically so
 the pre-existing `testTop` pytest suite (adapted to the new config mechanism) could actually
 exercise the gateway end-to-end, since virtually every real CA client (`pyepics` included)
-requests one of those formats by default. Large parts of the original Gateway's feature set
-(real ASG/UAG/HAG access-security enforcement, stat/heartbeat/rate PVs, caPutLog, multi-server
-listening, etc.) are **still not implemented** — the corresponding `testTop` tests are marked
-`skip` with a reason, not adapted. Recent commits were produced with an AI coding agent
+requests one of those formats by default. It also now supports real ASG/UAG/HAG
+access-security enforcement (via `gateLoadAccess`/`asInitFile`, see Architecture below) and
+pvlist-level `DENY`/`DENY FROM <hosts>` route hiding. Other parts of the original Gateway's
+feature set (stat/heartbeat/rate PVs, caPutLog, multi-server listening, etc.) are **still not
+implemented** — the corresponding `testTop` tests are marked `skip` with a reason, not adapted.
+Recent commits were produced with an AI coding agent
 (`google-labs-jules[bot]`); expect rough edges and re-verify behavior against actual EPICS
 semantics rather than trusting comments or prior commit messages.
 
@@ -97,9 +99,36 @@ Three layers, bottom to top:
      optionally rewriting the upstream name via an optional `target` (PCRE2 `$1`-style
      back-reference, e.g. pattern `"gateway:(.*)"` + target `"ioc:$1"`) — the `channels` cache
      stays keyed by the downstream name; only the name passed to `ca_create_channel()` changes.
+     A `Route` can instead be a DENY route (`gate_add_deny_cmd`, legacy pvlist `DENY`/
+     `DENY FROM <hosts>` semantics — distinct from ASG/UAG/HAG, see below): a blanket DENY
+     hides a matching name from every client (same as no route at all); `DENY FROM` hides it
+     only from clients whose self-reported CA hostname is in the given list. `routes` is
+     scanned in full (not first-match) so a DENY route always overrides a matching ALLOW/ALIAS
+     route, modeling this codebase's only usage of the legacy `EVALUATION ORDER ALLOW, DENY`
+     convention. Search-time existence checks (`gate_channel_exists`, from the anonymous UDP
+     search-reply path) have no client identity and only honor blanket DENY; claim-time checks
+     (`gate_create_channel_for_client`, called from `dbNameToAddr`/`dbChannel_create` on the
+     per-client TCP thread) also honor `DENY FROM`, using the client's self-reported hostname
+     recovered from rsrv's own `rsrvCurrentClient` thread-local (`server.h`) — no vendored-file
+     changes needed for this. Routes are re-evaluated even for an already-cached channel, so a
+     cache hit can't bypass a per-client `DENY FROM` check.
+   - Real ASG/UAG/HAG access-security enforcement (read/write rights on an *existing* channel,
+     as opposed to the DENY routes above, which control whether it can be claimed at all) is
+     just rsrv's own vendored, unmodified `asAddClient`/`asCheckGet`/`asCheckPut`/
+     `casAccessRightsCB` machinery — already correctly wired to each `GateChannel`'s
+     `ASMEMBERPVT` via `asDbGetMemberPvt()` (`gateShim.c`) — becoming live once an ACF is
+     actually loaded. `gate_load_access()` (`GateLogic.cpp`) calls Base's `asInitFile()`,
+     exposed as the `gateLoadAccess <file>` iocsh command (there is no JSON-config equivalent;
+     it's a separate iocsh command, called before `gateLoadConfig` so `asInitialize` runs
+     before any route/channel exists); until it's called, libCom's `asActive` stays false and
+     every access check silently allows everything (this was the case for the whole history of
+     this branch until now). A channel's ASG membership comes from its route's `as_group`
+     (default `"DEFAULT"`).
    - Parses a small JSON config format (via `yajl`, Base's bundled JSON parser — see
      `gate_load_config`) with `clients: [{name, addr_list, auto_addr, port}]` and
-     `pvs: [{pattern, client, as_group, target?}]`. This is **not** the same schema as the
+     `pvs: [{pattern, action?, client, as_group, target?, hosts?}]` (`action` is `"allow"`
+     (default) or `"deny"`; `"deny"` entries take `hosts` — an array, absent/empty = blanket —
+     instead of `client`/`as_group`/`target`). This is **not** the same schema as the
      historical `GATEWAY.pvlist`/`GATEWAY.access` files, nor the same as pvAccess gateway JSON
      configs (`dummy.conf` is an example of that *different*, unrelated format).
    - `pvlist_to_json.py` is a migration helper from the old `pvlist` format, but its output
@@ -116,8 +145,8 @@ Three layers, bottom to top:
 `main()` (`GateMain.cpp`) calls `gate_init()`, `rsrvIocRegister()` (registers `rsrv` with the
 shim's `dbRegisterServer`), then drives the registered server's `init()`/`run()`, and finally
 drops into `iocsh()`. New iocsh commands registered here: `gateCreateClient`,
-`gateAddPV <pattern> <client> <as_group> [target]`, `gateLoadConfig` (plus `rsrv`'s own
-`casr`).
+`gateAddPV <pattern> <client> <as_group> [target]`, `gateLoadConfig`, `gateLoadAccess <file>`
+(loads an ACF via `asInitFile`) (plus `rsrv`'s own `casr`).
 
 ## Build
 
@@ -137,9 +166,11 @@ Standard EPICS "extension"/module build (`configure/RULES` from EPICS Base's bui
 
 `configure/CONFIG_SITE` still carries flags from the legacy PCAS-based Gateway
 (`USE_PCRE`, `USE_DENY_FROM`, `STAT_PVS`, `RATE_STATS`, `CONTROL_PVS`, `HEARTBEAT_PV`,
-`CAS_DIAGNOSTICS`, `HANDLE_EXCEPTIONS`). None of those features exist in the current
-`GateLogic.cpp`/`rsrv`-based code path — the flags are inert leftovers, not evidence the
-feature is implemented.
+`CAS_DIAGNOSTICS`, `HANDLE_EXCEPTIONS`). These are inert leftovers, not evidence a feature is
+implemented — none of them gate anything in the current `GateLogic.cpp`/`rsrv`-based code
+path. In particular, `USE_DENY_FROM` does **not** control the `DENY FROM <hosts>` route
+support described above — that's unconditional, plain runtime route data, not a compile-time
+option.
 
 ## Running / manual smoke test
 
@@ -155,6 +186,7 @@ exit, which exits the whole process — see how `testTop/pyTestsApp/gateway_test
 gateCreateClient <name> <addr_list> <auto_addr 0|1> <port>   # define an upstream CA client
 gateAddPV <pcre-pattern> <client-name> <as-group> [target]   # route matching PV names to it
 gateLoadConfig <file.json>                                    # do both from a JSON file
+gateLoadAccess <file.acf>                                     # load an ASG/UAG/HAG access file
 casr <level>                                                  # rsrv's built-in server report
 ```
 
@@ -175,15 +207,22 @@ adapted to run against the `rsrv`-based reimplementation:
 
 - `conftest.py`'s `run_gateway()` launches the gateway with no CLI args (env vars
   `EPICS_CA_SERVER_PORT`/`EPICS_CAS_INTF_ADDR_LIST` set its listening address/port) and drives
-  it via `gateCreateClient`/`gateLoadConfig` over stdin. `pvlist_text_to_routes()` translates
-  the legacy ALIAS/ALLOW/DENY pvlist mini-language (still used by `standard_env`'s static
-  `pvlist_bre.txt`/`pvlist_pcre.txt`) into the new JSON route schema, including converting BRE
-  `\(..\)`/`\1` and PCRE `(..)`/`\1` group syntax into the PCRE2 `$1`-style `target` the
-  reimplementation expects.
-- `test_permissions.py`, `test_property_cache.py`, and `test_logging.py` are skipped outright
-  (real access-security enforcement / Gateway stats PVs / caPutLog, respectively, aren't
-  implemented); one test in `test_enum_property_cache.py` is skipped for the same stats-PV
-  reason (its two siblings were already `xfail` for an unrelated bug, unchanged).
+  it via `gateCreateClient`/`gateLoadAccess`/`gateLoadConfig` over stdin (`gateLoadAccess` only
+  if the `access` file exists and is non-empty, and always before `gateLoadConfig` so
+  `asInitialize` runs before any route/channel can be created). `pvlist_text_to_routes()`
+  translates the legacy ALIAS/ALLOW/DENY pvlist mini-language (still used by `standard_env`'s
+  static `pvlist_bre.txt`/`pvlist_pcre.txt`) into the new JSON route schema, including
+  converting BRE `\(..\)`/`\1` and PCRE `(..)`/`\1` group syntax into the PCRE2 `$1`-style
+  `target` the reimplementation expects, and (unlike earlier in this branch's history) now
+  translates `DENY`/`DENY FROM <hosts>` lines into real deny routes instead of dropping them.
+  `testTop/pyTestsApp/access.txt` (`ASG(DEFAULT) { RULE(1,WRITE) }`, loaded for every test via
+  `standard_env`/`default_access`) is what keeps every non-permissions test's full read+write
+  access unchanged now that AS enforcement is actually active.
+- `test_property_cache.py` and `test_logging.py` are skipped outright (Gateway stats PVs /
+  caPutLog, respectively, aren't implemented); one test in `test_enum_property_cache.py` is
+  skipped for the same stats-PV reason (its two siblings were already `xfail` for an unrelated
+  bug, unchanged). `test_permissions.py` (real ASG/UAG/HAG read/write enforcement plus pvlist
+  `DENY`/`DENY FROM` route-hiding) is no longer skipped and should pass.
 - Everything else (`test_simple.py`, the `test_dbe_*.py` files, `test_subscriptions.py`,
   `test_cs_studio.py`, `test_structures.py`, `test_enum_undefined_timestamp.py`,
   `test_waveform_with_ca_max_array_bytes.py`) exercises the gateway for real and should pass —

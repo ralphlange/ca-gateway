@@ -3,6 +3,10 @@
 #include <stddef.h>
 #include "gate_compat.h"
 #include "gate_db_interface.h"
+/* For rsrvCurrentClient / struct client (pHostName) -- see gate_current_client_hostname()
+ * below. This is rsrv's own per-client-thread identity, already set up (unmodified,
+ * vendored) by casAttachThreadToClient()/host_name_action() in caservertask.c/camessage.c. */
+#include "server.h"
 
 struct dbBase dummy_dbbase;
 struct dbBase *pdbbase = &dummy_dbbase;
@@ -53,8 +57,27 @@ static void gate_fill_addr(struct dbAddr *paddr, void *gh) {
     paddr->dbr_field_type = paddr->field_type;
 }
 
+/*
+ * Recovers the requesting client's self-reported CA hostname (from the CA_PROTO_HOST_NAME
+ * message, processed by host_name_action() in camessage.c) for use by DENY-FROM route
+ * matching (see gate_create_channel_for_client() in GateLogic.cpp). dbNameToAddr()/
+ * dbChannel_create() below run synchronously on the same per-TCP-client thread that already
+ * ran host_name_action() for this client (one thread per client, camsgtask()), so
+ * rsrvCurrentClient (set by casAttachThreadToClient(), caservertask.c) already reflects the
+ * right client here -- no changes to any vendored file needed. Returns NULL (treated as
+ * "unknown host", DENY FROM never matches) if called from a thread with no attached client,
+ * e.g. any caller other than the normal per-client TCP message loop.
+ */
+static const char* gate_current_client_hostname(void) {
+    struct client *c;
+    if (!rsrvCurrentClient) return NULL;
+    c = (struct client *) epicsThreadPrivateGet(rsrvCurrentClient);
+    if (!c || !c->pHostName || !c->pHostName[0]) return NULL;
+    return c->pHostName;
+}
+
 long dbNameToAddr(const char *pname, struct dbAddr *paddr) {
-    void* gh = gate_create_channel(pname);
+    void* gh = gate_create_channel_for_client(pname, gate_current_client_hostname());
     if (!gh) return -1;
     gate_wait_channel_ready(gh);
     gate_fill_addr(paddr, gh);
@@ -62,7 +85,7 @@ long dbNameToAddr(const char *pname, struct dbAddr *paddr) {
 }
 
 struct dbChannel * dbChannel_create(const char *name) {
-    void* gh = gate_create_channel(name);
+    void* gh = gate_create_channel_for_client(name, gate_current_client_hostname());
     if (!gh) return NULL;
     gate_wait_channel_ready(gh);
     struct dbChannelGate *gchan = (struct dbChannelGate *)calloc(1, sizeof(struct dbChannelGate));

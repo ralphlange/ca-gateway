@@ -59,9 +59,15 @@ def _backrefs_to_dollar(text: str) -> str:
     return re.sub(r"\\(\d)", r"$\1", text)
 
 
-def pvlist_text_to_routes(text: str, client: str = "default") -> List[Dict[str, str]]:
-    """Translate legacy pvlist ALIAS/ALLOW/DENY lines into the new Gateway's JSON routes."""
-    routes: List[Dict[str, str]] = []
+def pvlist_text_to_routes(text: str, client: str = "default") -> List[Dict[str, Any]]:
+    """Translate legacy pvlist ALIAS/ALLOW/DENY lines into the new Gateway's JSON routes.
+
+    Only the "EVALUATION ORDER ALLOW, DENY" convention (the only one used anywhere in this
+    repo) is modeled: a DENY route always overrides an ALLOW/ALIAS route matching the same
+    name, regardless of which line came first. "EVALUATION ORDER DENY, ALLOW" is not
+    supported (the ORDER line itself is still just skipped).
+    """
+    routes: List[Dict[str, Any]] = []
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or line.upper().startswith("EVALUATION"):
@@ -73,17 +79,24 @@ def pvlist_text_to_routes(text: str, client: str = "default") -> List[Dict[str, 
         action = m.group("action").upper()
         rest = (m.group("rest") or "").strip()
         if action == "DENY":
-            continue  # no route: unmatched names correctly report "not found"
-        if action == "ALIAS":
+            # Blanket DENY hides the name from every client; "DENY FROM host1,host2,..."
+            # hides it only from clients whose self-reported CA hostname is in that list
+            # (see gate_add_deny_cmd()/gate_create_channel_for_client() in GateLogic.cpp).
+            if rest.upper().startswith("FROM"):
+                hosts = [h.strip() for h in rest[4:].split(",") if h.strip()]
+            else:
+                hosts = []
+            routes.append({"pattern": pattern, "action": "deny", "hosts": hosts})
+        elif action == "ALIAS":
             parts = rest.split(None, 1)
             if not parts:
                 continue
             target = _backrefs_to_dollar(parts[0])
             as_group = parts[1].strip() if len(parts) > 1 else "DEFAULT"
-            routes.append({"pattern": pattern, "target": target, "client": client, "as_group": as_group})
+            routes.append({"pattern": pattern, "action": "allow", "target": target, "client": client, "as_group": as_group})
         elif action == "ALLOW":
             as_group = rest if rest else "DEFAULT"
-            routes.append({"pattern": pattern, "client": client, "as_group": as_group})
+            routes.append({"pattern": pattern, "action": "allow", "client": client, "as_group": as_group})
     return routes
 
 
@@ -267,8 +280,9 @@ def run_gateway(
     Parameters
     ----------
     access : str, optional
-        Unused -- the rsrv-based Gateway never loads an ACF (no `asInit` call), kept
-        only so existing call sites don't need to drop the keyword.
+        Path to an access security (ACF) file. If it exists and is non-empty, it's loaded
+        via a `gateLoadAccess` iocsh command, written to stdin before `gateLoadConfig` so
+        `asInitialize` runs before any route/channel can be created.
 
     pvlist : str, optional
         Path to a pvlist-mini-language file.  Defaults to ``default_pvlist``.
@@ -286,7 +300,7 @@ def run_gateway(
     stats_prefix : str, optional
         Unused -- Gateway statistics PVs aren't implemented.
     """
-    del access, stats_prefix  # not consumed by the rsrv-based Gateway
+    del stats_prefix  # not consumed by the rsrv-based Gateway
 
     pvlist_text = ""
     if pvlist and os.path.exists(pvlist):
@@ -313,12 +327,11 @@ def run_gateway(
             wait_for=b"epics>",
         ) as proc:
             assert proc.stdin is not None
-            proc.stdin.write(
-                (
-                    f"gateCreateClient default localhost 0 {ioc_port}\n"
-                    f"gateLoadConfig {config_fp.name}\n"
-                ).encode()
-            )
+            startup_commands = f"gateCreateClient default localhost 0 {ioc_port}\n"
+            if access and os.path.exists(access) and os.path.getsize(access) > 0:
+                startup_commands += f"gateLoadAccess {access}\n"
+            startup_commands += f"gateLoadConfig {config_fp.name}\n"
+            proc.stdin.write(startup_commands.encode())
             proc.stdin.flush()
             yield proc
     finally:
