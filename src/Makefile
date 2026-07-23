@@ -21,4 +21,12 @@ PROD_LIBS += $(EPICS_BASE_IOC_LIBS)
 
 gateway_SYS_LIBS += pcre2-8
 
+# Only for static builds:
+# As gateShim.c intentionally re-implements functions of EPICS Base,
+# add --allow-multiple-definition to keep gateShim.o's definitions
+# and just drop the archives' conflicting ones.
+ifeq ($(STATIC_BUILD),YES)
+gateway_LDFLAGS += -Wl,--allow-multiple-definition
+endif
+
 include $(TOP)/configure/RULES
