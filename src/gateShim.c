@@ -52,7 +52,11 @@ static void gate_fill_addr(struct dbAddr *paddr, void *gh) {
     int ca_type = gate_native_ca_type(gh);
     if (ca_type < 0) ca_type = DBR_DOUBLE; /* not connected yet: reasonable fallback */
     paddr->no_elements = gate_native_count(gh);
-    paddr->field_type = (short)gate_dbr_to_dbf(ca_type);
+    /* field_type/dbr_field_type feed real, unshimmed Base macros (dbChannelExportType/
+     * dbChannelExportCAType, camessage.c) that index Base's own dbDBRnewToDBRold[] table --
+     * they need the real, per-version dbFldTypes.h ordering, not gate_dbr_to_dbf()'s portable
+     * one (see gate_compat.h's gate_dbf_to_real_dbf() comment). */
+    paddr->field_type = (short)gate_dbf_to_real_dbf(gate_dbr_to_dbf(ca_type));
     paddr->field_size = dbr_value_size[ca_type];
     paddr->dbr_field_type = paddr->field_type;
 }

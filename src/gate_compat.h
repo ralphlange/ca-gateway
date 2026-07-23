@@ -1,6 +1,13 @@
 #ifndef GATE_COMPAT_H
 #define GATE_COMPAT_H
 
+/* asLib.h (below) declares several functions taking a plain FILE* (asInitFP, asDumpFP, ...)
+ * without including <stdio.h> itself -- it relies on whatever includes it having already
+ * pulled FILE in transitively. Include it explicitly rather than depend on a particular Base
+ * version's transitive header layout happening to do that first.
+ */
+#include <stdio.h>
+
 #include <epicsVersion.h>
 #include <epicsTypes.h>
 #include <epicsTime.h>
@@ -14,19 +21,105 @@
 #  define EPICS_VERSION_AT_LEAST(v,r,l,p) (EPICS_VERSION > (v) || (EPICS_VERSION == (v) && EPICS_REVISION >= (r)))
 #endif
 
-#if EPICS_VERSION_AT_LEAST(7,0,0,0)
-#  include <dbAccessDefs.h>
-#  include <dbAddr.h>
-#  include <dbBase.h>
-#  include <dbFldTypes.h>
-#  include <dbChannel.h>
-#  include <dbNotify.h>
-#  include <dbEvent.h>
-#  include <dbServer.h>
-#  include <net_convert.h>
+/* dbChannel (struct dbChannel/dbChannel_create/etc., what this Gateway's shim layer is built
+ * around throughout -- see CLAUDE.md) exists in every Base version supported here (3.15+);
+ * it doesn't exist at all before 3.15, which is exactly why Base 3.14 isn't supported.
+ */
+#include <dbAccessDefs.h>
+#include <dbAddr.h>
+#include <dbBase.h>
+#include <dbFldTypes.h>
+#include <dbChannel.h>
+#include <dbNotify.h>
+#include <dbEvent.h>
+#include <net_convert.h>
+/* recSup.h (for the bare `rset` typedef gateShim.c's dbGetRset() stub returns) is pulled in
+ * transitively by dbBase.h on Base 7.0 but not 3.15 (3.15's dbBase.h doesn't include it at
+ * all) -- include it explicitly rather than relying on either version's transitive layout.
+ */
+#include <recSup.h>
+/* dbConvert.h (GETCONVERTFUNC, dbGetConvertRoutine[][]) MUST be included here, before the
+ * DBF_* / DBR_* #undef #define block further down remaps DBF_DEVICE/DBR_ENUM to our own
+ * CA-wire-ordering values -- dbConvert.h's own array declaration is sized
+ * [DBF_DEVICE+1][DBR_ENUM+1] using whatever those macros mean *at its own include point*,
+ * and it must see Base's real, per-version dbFldTypes.h values (3.15: [12][10], 7.0: [14][12])
+ * to match the actual array Base's library exports. GateFormat.cpp used to hand-declare this
+ * extern itself with 7.0's dimensions hardcoded -- harmless on 7.0 only by coincidence, but on
+ * 3.15 it silently computed every index against the wrong (larger) row stride, reading
+ * whatever happened to be at that offset instead of the real conversion routine.
+ */
+#include <dbConvert.h>
+
+/* Deliberately NOT including Base's own <dbServer.h>: gateShim.c/GateMain.cpp own both ends
+ * of this struct already (dbRegisterServer()/rsrv_psrv are entirely our own shim, never
+ * Base's real dbServer machinery), and its actual shape differs materially by version --
+ * Base 7.0 added init/run/pause/stop control-method fields (to support multiple simultaneous
+ * server layers, e.g. CA + PVA) that don't exist on Base 3.15's dbServer at all, and changed
+ * dbRegisterServer() from void to int. Providing our own single definition, unconditionally,
+ * sidesteps that mismatch entirely rather than needing two incompatible struct layouts.
+ */
+/* caservertask.c (vendored, unmodified) also does its own #include "dbServer.h" directly --
+ * pre-defining Base's own include guard makes that a no-op instead of pulling in the real,
+ * conflicting struct a second time.
+ */
+#define INC_dbServer_H
+typedef struct dbServer {
+    ELLNODE node;
+    const char *name;
+    void (* report) (unsigned level);
+    void (* stats) (unsigned *channels, unsigned *clients);
+    int (* client) (char *pBuf, size_t bufSize);
+    void (* init) (void);
+    void (* run) (void);
+    void (* pause) (void);
+    void (* stop) (void);
+} dbServer;
+int dbRegisterServer(dbServer *psrv);
+
+#if !EPICS_VERSION_AT_LEAST(7,0,0,0)
+/* ERL_ERROR/ERL_WARNING (errlog.h) are ANSI-color-coded log-severity tags introduced in
+ * Base 7.0 and used verbatim (inside errlogPrintf format strings) by caserverio.c/
+ * caservertask.c/camsgtask.c; 3.15's errlog.h has no such macros at all. Plain, uncolored
+ * text is a fine substitute -- these only affect what the printed message looks like.
+ */
+#ifndef ERL_ERROR
+#  define ERL_ERROR "ERROR"
+#endif
+#ifndef ERL_WARNING
+#  define ERL_WARNING "WARNING"
+#endif
+/* osiSockOptMcastTTL_t (caservertask.c, IP_MULTICAST_TTL setsockopt) is a Base 7.0
+ * os/Linux/osdSock.h addition -- plain int prior to that, per 7.0's own typedef.
+ */
+typedef int osiSockOptMcastTTL_t;
+/* CA_VSUPPORTED (caProto.h, used throughout camessage.c to reject unsupported protocol
+ * minor versions) is a Base 7.0 addition too; 3.15's caProto.h has no equivalent at all
+ * (every minor version it ever spoke was already >= this threshold). Same definition 7.0
+ * itself uses.
+ */
+#ifndef CA_MINIMUM_SUPPORTED_VERSION
+#  define CA_MINIMUM_SUPPORTED_VERSION 4u
+#endif
+#ifndef CA_VSUPPORTED
+#  define CA_VSUPPORTED(MINOR) ((MINOR)>=CA_MINIMUM_SUPPORTED_VERSION)
+#endif
+
+/* Base 3.15 bundles a materially older yajl (JSON parser): yajl_integer's callback takes a
+ * plain `long` (not `long long`), string-length callbacks take `unsigned int` (not `size_t`),
+ * yajl_alloc() takes an extra (now-removed) yajl_parser_config* argument, and the parser's
+ * "check the whole input was consumed" call is named yajl_parse_complete() rather than
+ * yajl_complete_parse(). GateLogic.cpp's JSON config parser uses these consistently through
+ * the aliases below instead of hardcoding either API.
+ */
+typedef long gate_yajl_int_t;
+typedef unsigned int gate_yajl_len_t;
+#define gate_yajl_alloc(callbacks, ctx) yajl_alloc((callbacks), NULL, NULL, (ctx))
+#define gate_yajl_complete_parse(hand) yajl_parse_complete(hand)
 #else
-#  include <dbAccess.h>
-#  include <dbEvent.h>
+typedef long long gate_yajl_int_t;
+typedef size_t gate_yajl_len_t;
+#define gate_yajl_alloc(callbacks, ctx) yajl_alloc((callbacks), NULL, (ctx))
+#define gate_yajl_complete_parse(hand) yajl_complete_parse(hand)
 #endif
 
 #include <asLib.h>
@@ -50,6 +143,34 @@ enum {
     G_S_DBF_DOUBLE = 10,
     G_S_DBF_ENUM   = 11
 };
+
+/* G_S_DBF_* above is a portable, made-up numbering used purely for our own internal
+ * dispatch (gate_dbr_to_dbf()'s return value, matched against these same names in
+ * switch/case elsewhere) -- it is NOT dbFldTypes.h's real per-version database field-type
+ * ordering, and must never be used to index a table Base itself provides (dbGetConvertRoutine,
+ * or dbDBRnewToDBRold via dbAddr::field_type/dbr_field_type -- see gateShim.c's
+ * gate_fill_addr() and GateFormat.cpp's gate_format_response()). Those real tables are
+ * indexed by dbFldTypes.h's actual enum, which differs by version: Base 7.0 inserted
+ * DBF_INT64/DBF_UINT64 before FLOAT/DOUBLE, so e.g. real DBF_DOUBLE is 8 on 3.15 but 10 on
+ * 7.0. Captured here, before the CA-wire-numbering #undef/#define block below shadows
+ * DBF_STRING et al with our own portable 0..6 values, so these still refer to the real,
+ * per-version dbFldTypes.h constants.
+ */
+static const int gate_real_dbf[7] = {
+    DBF_STRING, DBF_SHORT, DBF_FLOAT, DBF_ENUM, DBF_CHAR, DBF_LONG, DBF_DOUBLE
+};
+static inline int gate_dbf_to_real_dbf(int canonical) {
+    switch (canonical) {
+        case G_S_DBF_STRING: return gate_real_dbf[0];
+        case G_S_DBF_SHORT:  return gate_real_dbf[1];
+        case G_S_DBF_FLOAT:  return gate_real_dbf[2];
+        case G_S_DBF_ENUM:   return gate_real_dbf[3];
+        case G_S_DBF_CHAR:   return gate_real_dbf[4];
+        case G_S_DBF_LONG:   return gate_real_dbf[5];
+        case G_S_DBF_DOUBLE: return gate_real_dbf[6];
+        default: return gate_real_dbf[0];
+    }
+}
 
 #undef DBR_STRING
 #undef DBR_SHORT
@@ -138,45 +259,6 @@ typedef epicsUInt8 dbr_char_t;
 typedef epicsInt32 dbr_long_t;
 typedef epicsFloat32 dbr_float_t;
 typedef epicsFloat64 dbr_double_t;
-
-#if !EPICS_VERSION_AT_LEAST(7,0,0,0)
-#ifndef INC_dbChannel_H
-struct dbChannel {
-    const char *name;
-    long final_no_elements;
-    short final_type;
-};
-typedef struct dbChannel dbChannel;
-#endif
-#ifndef INC_dbServer_H
-typedef struct dbServer {
-    ELLNODE node;
-    const char *name;
-    void (* report) (unsigned level);
-    void (* stats) (unsigned *channels, unsigned *clients);
-    int (* client) (char *pBuf, size_t bufSize);
-    void (* init) (void);
-    void (* run) (void);
-    void (* pause) (void);
-    void (* stop) (void);
-} dbServer;
-#endif
-int dbRegisterServer(dbServer *psrv);
-#ifndef dbChannelName
-#  define dbChannelName(CHAN) ((CHAN)->name)
-#endif
-#ifndef dbChannelFinalElements
-#  define dbChannelFinalElements(CHAN) ((CHAN)->final_no_elements)
-#endif
-#ifndef dbChannelFinalCAType
-#  define dbChannelFinalCAType(CHAN) ((CHAN)->final_type)
-#endif
-#ifndef SPC_NOMOD
-#  define SPC_NOMOD 1
-#endif
-typedef unsigned long arrayElementCount;
-int caNetConvert (unsigned type, const void *pSrc, void *pDest, int hton, arrayElementCount count );
-#endif
 
 static inline int gate_dbr_to_dbf(int dbr) {
     switch(dbr % 7) {

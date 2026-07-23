@@ -36,9 +36,17 @@ Three layers, bottom to top:
    `rsrvIocRegister.c`). These are copies of EPICS Base's internal `rsrv` module, compiled
    directly into the `gateway` binary (see comment `# Copy of rsrv` in `src/Makefile`) rather
    than linked from Base, so the code can be patched to work outside of a real IOC and across
-   multiple Base versions (3.14/3.15/7.0 — see `gate_compat.h`). Treat these as close to
+   multiple Base versions (3.15/7.0 — see `gate_compat.h`). Treat these as close to
    upstream EPICS Base; prefer fixing incompatibilities in the shim/compat layer over editing
    them, so they stay easy to diff against a real Base checkout.
+
+   Base 3.14 is **not, and cannot easily be, supported by this branch**: this vendored `rsrv`
+   snapshot is built entirely around the `dbChannel` API (`struct dbChannel`,
+   `dbChannel_create`, etc., see layer 2 below), which doesn't exist at all before Base 3.15 —
+   3.14's real `rsrv` used the older `dbAddr`-only access API instead. Supporting 3.14 would
+   mean vendoring a materially different (older) `rsrv` snapshot and a parallel code path
+   through the shim/gateway logic, not a `gate_compat.h`-style compat fix. There is no
+   `.ci-local/base-3.14.set` and no `B-3.14` CI matrix entry.
 
 2. **Shim/compat layer** (`src/gateShim.c`, `src/gate_compat.h`, `src/net_convert.h`,
    `src/db_field_log.h`) — the "database hijack" layer. `rsrv` expects to call into a real
@@ -68,6 +76,22 @@ Three layers, bottom to top:
      consistent with `db_post_extra_labor()`/`db_close_events()` already being no-ops (nothing
      ever actually queues/delivers the extra-labor callback here). If a future Base version
      adds another function that takes a `dbEventCtx`, it needs the same treatment.
+   - **`dbFldTypes.h`'s database field-type ordering is not the same across supported Base
+     versions**, and this bit us for real: Base 7.0 inserted `DBF_INT64`/`DBF_UINT64` before
+     `FLOAT`/`DOUBLE`, so e.g. `DBF_DOUBLE` is `8` on 3.15 but `10` on 7.0.
+     `GateFormat.cpp`/`gateShim.c` need Base's *real*, per-version value here (to index
+     `dbGetConvertRoutine[][]`/`dbDBRnewToDBRold[]`, both Base-provided), never
+     `gate_dbr_to_dbf()`'s own portable canonical numbering (used purely for this code's
+     internal switch/dispatch, unrelated to either table) — see `gate_compat.h`'s
+     `gate_dbf_to_real_dbf()` and its comment for the translation between the two. Relatedly,
+     always get `GETCONVERTFUNC dbGetConvertRoutine[][]`'s declaration from Base's own
+     `<dbConvert.h>` (included early in `gate_compat.h`, before the `DBF_*`/`DBR_*`
+     `#undef`/`#define` block below shadows the macros `dbConvert.h` sizes its array with) —
+     never hand-declare it with a literal dimension: a previous hardcoded `[14][12]` (7.0's
+     shape) compiled fine but silently corrupted every value conversion on 3.15 (real shape
+     `[12][10]`), since the array's *row stride* differs by version and a wrong stride means
+     every 2D index lands on the wrong element — not a compile or link error, memory
+     corruption, only caught by actually running the DBE_LOG test against a real 3.15 IOC.
 
 3. **Gateway logic** (`src/GateLogic.cpp` + `src/GateFormat.h`/`.cpp`, declared via
    `src/gate_db_interface.h`, entered from `src/GateMain.cpp`). A C++ engine that:
@@ -154,14 +178,15 @@ Standard EPICS "extension"/module build (`configure/RULES` from EPICS Base's bui
 
 - Point at an EPICS Base checkout by creating `RELEASE.local` (at the repo root, sibling to
   `TOP`) or `configure/RELEASE.local` with `EPICS_BASE = /path/to/base`. Supported Base lines:
-  3.14, 3.15, 7.0 (`gate_compat.h` branches on `EPICS_VERSION_AT_LEAST`).
+  3.15, 7.0 (`gate_compat.h` branches on `EPICS_VERSION_AT_LEAST`) — **not** 3.14, see
+  Architecture above.
 - Requires `pcre2-8` (`libpcre2-dev` at build time, `libpcre2-8` at runtime) —
   `gateway_SYS_LIBS += pcre2-8` in `src/Makefile`.
 - Build: `make` from the repo root (or `make -C src` for just the gateway sources).
 - The `PROD_IOC` target is `gateway`; the built binary lands at
   `bin/<EPICS_HOST_ARCH>/gateway`.
 - CI (`.github/workflows/ci-scripts-build.yml`) uses EPICS `ci-scripts` (`.ci/cue.py`) against
-  the module sets in `.ci-local/` (`base-3.14.set`, `base-3.15.set`, `base-7.0.set`):
+  the module sets in `.ci-local/` (`base-3.15.set`, `base-7.0.set`):
   `python .ci/cue.py prepare && python .ci/cue.py build && python .ci/cue.py test`.
 
 `configure/CONFIG_SITE` still carries flags from the legacy PCAS-based Gateway
