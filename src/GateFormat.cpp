@@ -12,11 +12,6 @@
 #include "GateFormat.h"
 #include <cstring>
 
-extern "C" {
-typedef long (*GETCONVERTFUNC)(const struct dbAddr *paddr, void *pbuffer, long nRequest, long no_elements, long offset);
-extern GETCONVERTFUNC dbGetConvertRoutine[14][12];
-}
-
 namespace {
 
 // --- DBR_STS_*/DBR_TIME_* : identical status/severity/(timestamp) layout across all 7 types ---
@@ -284,16 +279,17 @@ int gate_format_response(int dbf, int buffer_type, void* pbuffer, long* nRequest
 
     // dbGetConvertRoutine, by contrast, is declared [DBF_DEVICE+1][DBR_ENUM+1] using
     // dbFldTypes.h's *database* field-type ordering for BOTH dimensions (STRING=0, CHAR=1,
-    // UCHAR=2, SHORT=3, ..., FLOAT=9, DOUBLE=10, ENUM=11) -- not the CA-wire ordering above.
-    // gate_dbr_to_dbf() already does exactly this CA-wire -> database-order translation for
-    // the source native type; reuse it for the requested type too.
+    // UCHAR=2, SHORT=3, ..., FLOAT=9, DOUBLE=10, ENUM=11 on Base 7.0; no INT64/UINT64 gap
+    // on 3.15, so e.g. DOUBLE=8 there) -- not the CA-wire ordering above, and not
+    // gate_dbr_to_dbf()'s own portable canonical numbering either: both indices need Base's
+    // real, per-version ordering, via gate_dbf_to_real_dbf() (see gate_compat.h).
     int conv_col = gate_dbr_to_dbf(basic);
-    GETCONVERTFUNC convert = dbGetConvertRoutine[dbf][conv_col];
+    GETCONVERTFUNC convert = dbGetConvertRoutine[gate_dbf_to_real_dbf(dbf)][gate_dbf_to_real_dbf(conv_col)];
     if (!convert) return -1;
 
     struct dbAddr addr;
     memset(&addr, 0, sizeof(addr));
-    addr.field_type = (short)dbf;
+    addr.field_type = (short)gate_dbf_to_real_dbf(dbf);
     addr.pfield = (void*)rawValue;
     addr.no_elements = count;
     convert(&addr, value_dest, n, count, 0);

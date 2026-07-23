@@ -681,13 +681,13 @@ int cb_end_array(void* vctx) {
     return 1;
 }
 
-int cb_map_key(void* vctx, const unsigned char* key, size_t len) {
+int cb_map_key(void* vctx, const unsigned char* key, gate_yajl_len_t len) {
     ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
     ctx->key.assign((const char*)key, len);
     return 1;
 }
 
-int cb_string(void* vctx, const unsigned char* val, size_t len) {
+int cb_string(void* vctx, const unsigned char* val, gate_yajl_len_t len) {
     ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
     std::string s((const char*)val, len);
     if (ctx->top() == ConfigParseCtx::CTX_CLIENT_OBJ) {
@@ -711,7 +711,7 @@ int cb_boolean(void* vctx, int boolVal) {
     return 1;
 }
 
-int cb_integer(void* vctx, long long integerVal) {
+int cb_integer(void* vctx, gate_yajl_int_t integerVal) {
     ConfigParseCtx* ctx = (ConfigParseCtx*)vctx;
     if (ctx->top() == ConfigParseCtx::CTX_CLIENT_OBJ && ctx->key == "port") ctx->port = (int)integerVal;
     return 1;
@@ -755,10 +755,10 @@ void gate_load_config(const char* filename) {
     std::string content((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
 
     ConfigParseCtx ctx;
-    yajl_handle hand = yajl_alloc(&configCallbacks, NULL, &ctx);
+    yajl_handle hand = gate_yajl_alloc(&configCallbacks, &ctx);
     yajl_status status = yajl_parse(hand, (const unsigned char*)content.data(), content.size());
     if (status == yajl_status_ok)
-        status = yajl_complete_parse(hand);
+        status = gate_yajl_complete_parse(hand);
     if (status == yajl_status_ok) {
         errlogPrintf("gate_load_config: '%s' loaded successfully\n", filename);
     } else {

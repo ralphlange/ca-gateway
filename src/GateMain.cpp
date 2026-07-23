@@ -4,26 +4,34 @@
 #include <epicsExit.h>
 #include <iostream>
 
+/* iocshFuncDef gained a trailing `usage` string field in Base 7.0 (flagged by its own
+ * IOCSHFUNCDEF_HAS_USAGE feature-detection macro); Base 3.15's is one field shorter. */
+#ifdef IOCSHFUNCDEF_HAS_USAGE
+#  define GATE_IOCSH_FUNCDEF(name, nargs, args, usage) { name, nargs, args, usage }
+#else
+#  define GATE_IOCSH_FUNCDEF(name, nargs, args, usage) { name, nargs, args }
+#endif
+
 extern "C" {
 void rsrvIocRegister(void);
 static const iocshArg clA0 = { "name", iocshArgString }, clA1 = { "addr_list", iocshArgString }, clA2 = { "auto_addr", iocshArgInt }, clA3 = { "port", iocshArgInt };
 static const iocshArg * const clAs[] = { &clA0, &clA1, &clA2, &clA3 };
-static const iocshFuncDef clDef = { "gateCreateClient", 4, clAs, "Create client" };
+static const iocshFuncDef clDef = GATE_IOCSH_FUNCDEF("gateCreateClient", 4, clAs, "Create client");
 static void clCall(const iocshArgBuf *a) { gate_create_client_cmd(a[0].sval, a[1].sval, a[2].ival, a[3].ival); }
 
 static const iocshArg pvA0 = { "pattern", iocshArgString }, pvA1 = { "client", iocshArgString }, pvA2 = { "as_group", iocshArgString }, pvA3 = { "target", iocshArgString };
 static const iocshArg * const pvAs[] = { &pvA0, &pvA1, &pvA2, &pvA3 };
-static const iocshFuncDef pvDef = { "gateAddPV", 4, pvAs, "Add PV (optional target: PCRE2 $1-style rewrite of the upstream name)" };
+static const iocshFuncDef pvDef = GATE_IOCSH_FUNCDEF("gateAddPV", 4, pvAs, "Add PV (optional target: PCRE2 $1-style rewrite of the upstream name)");
 static void pvCall(const iocshArgBuf *a) { gate_add_pv_cmd(a[0].sval, a[1].sval, a[2].sval, a[3].sval); }
 
 static const iocshArg ldA0 = { "filename", iocshArgString };
 static const iocshArg * const ldAs[] = { &ldA0 };
-static const iocshFuncDef ldDef = { "gateLoadConfig", 1, ldAs, "Load JSON config" };
+static const iocshFuncDef ldDef = GATE_IOCSH_FUNCDEF("gateLoadConfig", 1, ldAs, "Load JSON config");
 static void ldCall(const iocshArgBuf *a) { gate_load_config(a[0].sval); }
 
 static const iocshArg laA0 = { "filename", iocshArgString };
 static const iocshArg * const laAs[] = { &laA0 };
-static const iocshFuncDef laDef = { "gateLoadAccess", 1, laAs, "Load access security (ACF) file" };
+static const iocshFuncDef laDef = GATE_IOCSH_FUNCDEF("gateLoadAccess", 1, laAs, "Load access security (ACF) file");
 static void laCall(const iocshArgBuf *a) { gate_load_access(a[0].sval); }
 
 void gateIocRegister(void) {
