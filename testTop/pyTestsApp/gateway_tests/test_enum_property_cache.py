@@ -165,9 +165,6 @@ def test_enum_prop_cache_value_get_ctrl_get(
         assert not cond.wait(timeout=1.0)
 
 
-@pytest.mark.skip(
-    reason="Gateway statistics PVs (gwtest:*) not implemented in the rsrv-based Gateway"
-)
 def test_enum_prop_cache_value_get_disconnect_ctrl_get(
     standard_env: conftest.EnvironmentInfo,
 ):

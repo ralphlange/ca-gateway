@@ -34,11 +34,18 @@ static const iocshArg * const laAs[] = { &laA0 };
 static const iocshFuncDef laDef = GATE_IOCSH_FUNCDEF("gateLoadAccess", 1, laAs, "Load access security (ACF) file");
 static void laCall(const iocshArgBuf *a) { gate_load_access(a[0].sval); }
 
+static const iocshArg siA0 = { "prefix", iocshArgString }, siA1 = { "as_group", iocshArgString };
+static const iocshArg * const siAs[] = { &siA0, &siA1 };
+static const iocshFuncDef siDef = GATE_IOCSH_FUNCDEF("gateInitStats", 2, siAs,
+    "Create gateway statistics PVs (<prefix>:vctotal/pvtotal/connected/active/inactive); as_group defaults to DEFAULT");
+static void siCall(const iocshArgBuf *a) { gate_init_stats_cmd(a[0].sval, a[1].sval); }
+
 void gateIocRegister(void) {
     iocshRegister(&clDef, clCall);
     iocshRegister(&pvDef, pvCall);
     iocshRegister(&ldDef, ldCall);
     iocshRegister(&laDef, laCall);
+    iocshRegister(&siDef, siCall);
 }
 }
 

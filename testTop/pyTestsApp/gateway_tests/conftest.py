@@ -298,10 +298,9 @@ def run_gateway(
         There's no CLI debug-level flag to additionally forward.
 
     stats_prefix : str, optional
-        Unused -- Gateway statistics PVs aren't implemented.
+        Prefix for the gateway statistics PVs (``<prefix>:vctotal`` etc, see
+        `GatewayStats`), loaded via a `gateInitStats` iocsh command.
     """
-    del stats_prefix  # not consumed by the rsrv-based Gateway
-
     pvlist_text = ""
     if pvlist and os.path.exists(pvlist):
         # latin-1 can decode any byte sequence, matching how custom_environment() writes
@@ -330,6 +329,10 @@ def run_gateway(
             startup_commands = f"gateCreateClient default localhost 0 {ioc_port}\n"
             if access and os.path.exists(access) and os.path.getsize(access) > 0:
                 startup_commands += f"gateLoadAccess {access}\n"
+            # After gateLoadAccess (so, if an ACF was loaded, the stats PVs' ASG membership is
+            # registered while access security is already active -- see gate_init_stats_cmd()).
+            if stats_prefix:
+                startup_commands += f"gateInitStats {stats_prefix}\n"
             startup_commands += f"gateLoadConfig {config_fp.name}\n"
             proc.stdin.write(startup_commands.encode())
             proc.stdin.flush()

@@ -49,6 +49,14 @@ void* gate_get_as_member(void* handle);
 // CA HOST_NAME (NULL if unknown), used to evaluate DENY FROM routes even against an
 // already-cached channel. gate_create_channel(name) is gate_create_channel_for_client(name, NULL).
 void* gate_create_channel_for_client(const char* name, const char* hostname);
+// Registers a set of gateway statistics PVs (<prefix>:vctotal/pvtotal/connected/active/
+// inactive) as an iocsh command (gateInitStats); as_group defaults to "DEFAULT" if empty/NULL.
+void gate_init_stats_cmd(const char* prefix, const char* as_group);
+// Marks `handle` (a real, upstream-backed channel, never a statistics PV) as claimed by one
+// more/one fewer downstream dbChannel -- called by gateShim.c's dbChannel_create/
+// dbChannelDelete, which pair 1:1 per downstream client channel. Drives the "vctotal"/
+// "active"/"inactive" statistics PVs.
+void gate_channel_claim(void* handle);
 #ifdef __cplusplus
 }
 #endif
