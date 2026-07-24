@@ -9,6 +9,9 @@
 #include <condition_variable>
 #include <chrono>
 #include <algorithm>
+#include <atomic>
+#include <functional>
+#include <set>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -107,6 +110,13 @@ struct GateChannel {
     GateStaticMeta meta;
     std::mutex metaMutex;
 
+    // Number of downstream dbChannels (one per client currently claiming this PV name)
+    // currently open -- incremented/decremented 1:1 with dbChannel_create/dbChannelDelete
+    // (see gate_channel_claim()/gate_delete_channel()). Drives the "active" (>0) vs
+    // "inactive" (==0, still upstream-connected) statistics PVs, mirroring the old PCAS-based
+    // Gateway's per-PV client-reference counting.
+    std::atomic<int> downstreamRefs{0};
+
     // Signaled once the eager default (DBE_VALUE) subscription delivers its first event, so
     // gate_create_channel() can wait briefly for real data instead of handing back a channel
     // that will fail every get/monitor request until the upstream connection happens to land.
@@ -126,6 +136,92 @@ struct GateChannel {
 static std::map<std::string, std::shared_ptr<GateChannel>> channels;
 static std::mutex channelsMutex;
 static std::map<std::string, std::shared_ptr<GateClient>> clients;
+
+// --- Gateway statistics PVs (gateInitStats), comparable to the old PCAS-based Gateway's
+// STAT_PVS (vctotal/pvtotal/connected/active/inactive; see CLAUDE.md). Unlike a real
+// GateChannel, a GateStatEntry has no upstream chid at all -- its value is a live snapshot
+// computed on demand from `channels`/rsrv's own client list, not cached CA event data. RATE_STATS
+// (event-rate timers), CONTROL_PVS (debug/report/quit flags -- iocsh already covers that role
+// here) and HEARTBEAT_PV don't map onto anything meaningful in this architecture and are
+// skipped, per CLAUDE.md.
+struct GateStatEntry {
+    std::string name;
+    std::function<long()> getter;
+    ASMEMBERPVT asMember = NULL;
+    long lastValue = -1;
+
+    struct Sub {
+        void (*cb)(void*, void*, int, void*);
+        void* user_arg;
+        void* dbchan;
+        GateStatEntry* owner;
+    };
+    std::vector<Sub*> subs;
+    std::mutex mtx;
+};
+static std::map<std::string, std::unique_ptr<GateStatEntry>> statEntries;
+static std::mutex statEntriesMutex;
+// Identifies a void* handle/event-id as belonging to a GateStatEntry/GateStatEntry::Sub rather
+// than a GateChannel/GateChannel::MaskSub::UserSub -- simpler than adding a common tagged base
+// class to structures that are otherwise plain and, in UserSub's case, aggregate-initialized.
+static std::set<const void*> statHandles;
+static std::set<const void*> statSubHandles;
+static std::mutex statHandlesMutex;
+
+static bool is_stat_handle(const void* h) {
+    std::lock_guard<std::mutex> lock(statHandlesMutex);
+    return statHandles.count(h) != 0;
+}
+static bool is_stat_sub(const void* h) {
+    std::lock_guard<std::mutex> lock(statHandlesMutex);
+    return statSubHandles.count(h) != 0;
+}
+
+template <typename Pred>
+static long count_channels(Pred pred) {
+    std::lock_guard<std::mutex> lock(channelsMutex);
+    long n = 0;
+    for (auto& kv : channels) if (pred(kv.second.get())) n++;
+    return n;
+}
+
+template <typename F>
+static long sum_channels(F f) {
+    std::lock_guard<std::mutex> lock(channelsMutex);
+    long total = 0;
+    for (auto& kv : channels) total += f(kv.second.get());
+    return total;
+}
+
+// Re-evaluates every registered statistics PV and delivers a monitor update to whichever of
+// its subscribers changed value. Called after anything that can move one of these counters:
+// a channel is created (gate_create_channel_for_client), its downstream reference count
+// changes (gate_channel_claim/gate_delete_channel), or its upstream connection state changes
+// (ca_conn_cb). Not called on VC (rsrv TCP client) connect/disconnect, since that happens in
+// vendored, unmodified rsrv code we don't hook into -- vctotal is still always correct on a
+// fresh get, just not proactively pushed to monitors the instant it changes.
+static void notify_stats_changed() {
+    std::vector<GateStatEntry*> changed;
+    {
+        std::lock_guard<std::mutex> lock(statEntriesMutex);
+        for (auto& kv : statEntries) {
+            GateStatEntry* e = kv.second.get();
+            long v = e->getter();
+            if (v != e->lastValue) {
+                e->lastValue = v;
+                changed.push_back(e);
+            }
+        }
+    }
+    for (auto* e : changed) {
+        std::vector<GateStatEntry::Sub*> subsCopy;
+        {
+            std::lock_guard<std::mutex> lock(e->mtx);
+            subsCopy = e->subs;
+        }
+        for (auto* sub : subsCopy) sub->cb(sub->user_arg, sub->dbchan, 0, NULL);
+    }
+}
 
 struct Route {
     pcre2_code* re;
@@ -261,9 +357,12 @@ static std::shared_ptr<GateChannel::MaskSub> get_or_create_mask_sub(GateChannel*
 
 static void ca_conn_cb(struct connection_handler_args args) {
     GateChannel* gchan = (GateChannel*)ca_puser(args.chid);
-    if (args.op != CA_OP_CONN_UP) return;
-    get_or_create_mask_sub(gchan, args.chid, GATE_DEFAULT_MASK);
-    refresh_static_meta(gchan, args.chid, nullptr, nullptr);
+    if (args.op == CA_OP_CONN_UP) {
+        get_or_create_mask_sub(gchan, args.chid, GATE_DEFAULT_MASK);
+        refresh_static_meta(gchan, args.chid, nullptr, nullptr);
+    }
+    // Either direction can move the "connected"/"active"/"inactive" statistics PVs.
+    notify_stats_changed();
 }
 
 static ca_client_context* g_ca_ctx = NULL;
@@ -328,34 +427,53 @@ static RouteMatch match_routes_locked(const char* name, const char* hostname) {
 void* gate_create_channel_for_client(const char* name, const char* hostname) {
     ensure_ca_context();
 
-    std::lock_guard<std::mutex> lock(channelsMutex);
-    std::lock_guard<std::mutex> rlock(routesMutex);
-    RouteMatch m = match_routes_locked(name, hostname);
-    if (!m.has_allow || m.denied) return NULL;
-
-    auto it = channels.find(name);
-    if (it != channels.end()) return (void*)it->second.get();
-
-    const Route& route = *m.allow_route;
-    std::string upstream_name = name;
-    if (!route.target.empty()) {
-        PCRE2_UCHAR outbuf[512];
-        PCRE2_SIZE outlen = sizeof(outbuf) / sizeof(PCRE2_UCHAR);
-        int rc2 = pcre2_substitute(route.re, (PCRE2_SPTR)name, strlen(name), 0,
-                                   0, NULL, NULL,
-                                   (PCRE2_SPTR)route.target.c_str(), route.target.size(),
-                                   outbuf, &outlen);
-        if (rc2 >= 0) {
-            upstream_name.assign((const char*)outbuf, outlen);
-        } else {
-            errlogPrintf("gate_create_channel: pcre2_substitute failed (%d) for '%s' -> '%s', using unmodified name\n",
-                         rc2, name, route.target.c_str());
-        }
+    // Statistics PVs (gateInitStats) are gateway-internal: they bypass route/DENY matching
+    // entirely (they're not upstream-routed PVs at all), which also means the UDP
+    // search-reply path (gate_channel_exists()) and dbNameToAddr()/dbChannel_create() all see
+    // them for free, with no vendored-file or gateShim.c dispatch changes needed.
+    {
+        std::lock_guard<std::mutex> lock(statEntriesMutex);
+        auto sit = statEntries.find(name);
+        if (sit != statEntries.end()) return (void*)sit->second.get();
     }
-    auto gchan = std::make_shared<GateChannel>(name, upstream_name.c_str(), route.as_group.c_str());
-    channels[name] = gchan;
+
+    GateChannel* result = nullptr;
+    bool created = false;
+    {
+        std::lock_guard<std::mutex> lock(channelsMutex);
+        std::lock_guard<std::mutex> rlock(routesMutex);
+        RouteMatch m = match_routes_locked(name, hostname);
+        if (!m.has_allow || m.denied) return NULL;
+
+        auto it = channels.find(name);
+        if (it != channels.end()) return (void*)it->second.get();
+
+        const Route& route = *m.allow_route;
+        std::string upstream_name = name;
+        if (!route.target.empty()) {
+            PCRE2_UCHAR outbuf[512];
+            PCRE2_SIZE outlen = sizeof(outbuf) / sizeof(PCRE2_UCHAR);
+            int rc2 = pcre2_substitute(route.re, (PCRE2_SPTR)name, strlen(name), 0,
+                                       0, NULL, NULL,
+                                       (PCRE2_SPTR)route.target.c_str(), route.target.size(),
+                                       outbuf, &outlen);
+            if (rc2 >= 0) {
+                upstream_name.assign((const char*)outbuf, outlen);
+            } else {
+                errlogPrintf("gate_create_channel: pcre2_substitute failed (%d) for '%s' -> '%s', using unmodified name\n",
+                             rc2, name, route.target.c_str());
+            }
+        }
+        auto gchan = std::make_shared<GateChannel>(name, upstream_name.c_str(), route.as_group.c_str());
+        channels[name] = gchan;
+        result = gchan.get();
+        created = true;
+    }
     ca_flush_io();
-    return (void*)gchan.get();
+    // notify_stats_changed() re-locks channelsMutex itself (via count_channels()) -- must run
+    // only after the lock_guards above have gone out of scope, not while still held.
+    if (created) notify_stats_changed(); // a new channel changes "pvtotal"
+    return (void*)result;
 }
 
 void* gate_create_channel(const char* name) {
@@ -376,6 +494,7 @@ int gate_channel_exists(const char* name) {
 // that also runs on the UDP search-reply path (gate_channel_exists()), which must stay fast
 // since the client's own connection-establishment doesn't wait on it at all.
 void gate_wait_channel_ready(void* handle) {
+    if (is_stat_handle(handle)) return; // no async upstream connect to wait for
     GateChannel* gchan = (GateChannel*)handle;
     std::unique_lock<std::mutex> lock(gchan->readyMutex);
     // 10s to match this test suite's own standard wait budget (cond.wait(timeout=10.0)),
@@ -388,22 +507,44 @@ void gate_wait_channel_ready(void* handle) {
 // is told the record's real type/array size instead of a hardcoded DBR_DOUBLE/1, which broke
 // every non-double and every array/waveform PV (clients that promote their request type from
 // the reported native type, e.g. pyepics, would ask for the wrong representation entirely).
+// Statistics PVs (gateInitStats) are always a scalar DBF_LONG counter -- there's no upstream
+// chid to ask.
 int gate_native_ca_type(void* handle) {
+    if (is_stat_handle(handle)) return DBR_LONG;
     GateChannel* gchan = (GateChannel*)handle;
     if (!gchan->caChid || ca_state(gchan->caChid) != cs_conn) return -1;
     return ca_field_type(gchan->caChid);
 }
 
 long gate_native_count(void* handle) {
+    if (is_stat_handle(handle)) return 1;
     GateChannel* gchan = (GateChannel*)handle;
     if (!gchan->caChid || ca_state(gchan->caChid) != cs_conn) return 1;
     long count = ca_element_count(gchan->caChid);
     return count > 0 ? count : 1;
 }
 
-void gate_delete_channel(void* channel) {}
+// Called by gateShim.c's dbChannelDelete(), 1:1 paired with dbChannel_create()'s
+// gate_channel_claim() -- see that function's comment. A no-op for statistics PVs, which
+// aren't claim-counted (they're never removed and don't drive their own "active" state).
+void gate_delete_channel(void* channel) {
+    if (is_stat_handle(channel)) return;
+    GateChannel* gchan = (GateChannel*)channel;
+    gchan->downstreamRefs.fetch_sub(1, std::memory_order_relaxed);
+    notify_stats_changed();
+}
+
+// Marks a real channel as claimed by one more downstream dbChannel (see gate_delete_channel()
+// above for the release side). A no-op for statistics PVs.
+void gate_channel_claim(void* handle) {
+    if (is_stat_handle(handle)) return;
+    GateChannel* gchan = (GateChannel*)handle;
+    gchan->downstreamRefs.fetch_add(1, std::memory_order_relaxed);
+    notify_stats_changed();
+}
 
 void* gate_get_as_member(void* handle) {
+    if (is_stat_handle(handle)) return (void*)((GateStatEntry*)handle)->asMember;
     return (void*)((GateChannel*)handle)->asMember;
 }
 
@@ -417,6 +558,19 @@ void* gate_get_as_member(void* handle) {
 // `pfl` is NULL for plain (non-monitor) gets (e.g. read_notify_action's call, camessage.c),
 // which keeps the previous "prefer the eager default subscription" behavior.
 int gate_get_count(void* handle, int buffer_type, void* pbuffer, long* nRequest, void* pfl) {
+    if (is_stat_handle(handle)) {
+        // No cached event data at all -- a statistics PV's value is always computed fresh,
+        // live, from current gateway state, whether this call came from a plain get or from
+        // a monitor delivery (pfl is always NULL for these; see gate_add_event()/
+        // notify_stats_changed() below).
+        GateStatEntry* stat = (GateStatEntry*)handle;
+        epicsInt32 value = (epicsInt32)stat->getter();
+        epicsTimeStamp stamp;
+        epicsTimeGetCurrent(&stamp);
+        GateStaticMeta meta;
+        return gate_format_response(G_S_DBF_LONG, buffer_type, pbuffer, nRequest, 1,
+                                     0, 0, stamp, &value, meta);
+    }
     GateChannel* gchan = (GateChannel*)handle;
     std::shared_ptr<GateData> data;
     if (pfl) {
@@ -452,6 +606,7 @@ int gate_get_count(void* handle, int buffer_type, void* pbuffer, long* nRequest,
 }
 
 int gate_put(void* channel, int src_type, const void* psrc, long no_elements) {
+    if (is_stat_handle(channel)) return -1; // statistics PVs are read-only
     ensure_ca_context();
     GateChannel* gchan = (GateChannel*)channel;
     int rc = ca_array_put(src_type, no_elements, gchan->caChid, psrc);
@@ -481,6 +636,7 @@ static void ca_put_notify_cb(struct event_handler_args args) {
 // taken effect", not just "was accepted for delivery".
 void gate_put_notify(void* channel, int src_type, const void* psrc, long no_elements,
                       gate_put_notify_callback* cb, void* user_arg) {
+    if (is_stat_handle(channel)) { cb(user_arg, -1); return; } // statistics PVs are read-only
     ensure_ca_context();
     GateChannel* gchan = (GateChannel*)channel;
     auto* ctx = new PutNotifyCtx{cb, user_arg};
@@ -494,6 +650,22 @@ void gate_put_notify(void* channel, int src_type, const void* psrc, long no_elem
 }
 
 void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, void* real_dbchan, unsigned int select) {
+    if (is_stat_handle(channel)) {
+        GateStatEntry* stat = (GateStatEntry*)channel;
+        auto* sub = new GateStatEntry::Sub{(void (*)(void*, void*, int, void*))cb, user_arg, real_dbchan, stat};
+        {
+            std::lock_guard<std::mutex> lock(statHandlesMutex);
+            statSubHandles.insert(sub);
+        }
+        {
+            std::lock_guard<std::mutex> lock(stat->mtx);
+            stat->subs.push_back(sub);
+        }
+        // Same convention as a real channel's first subscription delivery: every new monitor
+        // gets one immediate value, regardless of any other subscriber.
+        sub->cb(sub->user_arg, sub->dbchan, 0, NULL);
+        return (void*)sub;
+    }
     ensure_ca_context();
     GateChannel* gchan = (GateChannel*)channel;
     auto msub = get_or_create_mask_sub(gchan, gchan->caChid, select);
@@ -531,6 +703,21 @@ void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, voi
 // remove and free the entry.
 void gate_cancel_event(void* event_id) {
     if (!event_id) return;
+    if (is_stat_sub(event_id)) {
+        auto* sub = (GateStatEntry::Sub*)event_id;
+        GateStatEntry* stat = sub->owner;
+        {
+            std::lock_guard<std::mutex> lock(stat->mtx);
+            auto& v = stat->subs;
+            v.erase(std::remove(v.begin(), v.end(), sub), v.end());
+        }
+        {
+            std::lock_guard<std::mutex> lock(statHandlesMutex);
+            statSubHandles.erase(sub);
+        }
+        delete sub;
+        return;
+    }
     auto* usub = (GateChannel::MaskSub::UserSub*)event_id;
     GateChannel::MaskSub* msub = usub->owner;
     if (msub) {
@@ -546,6 +733,59 @@ void gate_create_client_cmd(const char* name, const char* addr_list, int auto_ad
     clients[name] = std::make_shared<GateClient>(name, addr_list ? addr_list : "", auto_addr != 0, port);
     errlogPrintf("gate_create_client_cmd: client '%s' created (addr_list='%s' auto_addr=%d port=%d)\n",
                  name, addr_list ? addr_list : "", auto_addr, port);
+}
+
+// Registers the gateInitStats iocsh command's statistics PVs under "<prefix>:" -- see the
+// GateStatEntry comment above. Comparable to the old PCAS-based Gateway's STAT_PVS
+// (vctotal/pvtotal/connected/active/inactive); RATE_STATS/CAS_DIAGNOSTICS (event-rate timers),
+// CONTROL_PVS (report/reload/quit flags -- iocsh commands already cover that role here) and
+// HEARTBEAT_PV (dead code even in the old implementation -- never actually updated) have no
+// sensible equivalent in this architecture and are skipped.
+void gate_init_stats_cmd(const char* prefix, const char* as_group) {
+    if (!prefix || !prefix[0]) {
+        errlogPrintf("gate_init_stats_cmd: empty prefix, ignoring\n");
+        return;
+    }
+    std::string ag = (as_group && as_group[0]) ? as_group : "DEFAULT";
+    auto add = [&](const char* suffix, std::function<long()> getter) {
+        std::string full = std::string(prefix) + ":" + suffix;
+        auto entry = std::make_unique<GateStatEntry>();
+        entry->name = full;
+        entry->getter = std::move(getter);
+        long as_status = asAddMember(&entry->asMember, ag.c_str());
+        if (as_status && as_status != S_asLib_asNotActive)
+            errlogPrintf("gate_init_stats_cmd: asAddMember('%s', as_group='%s') failed (status=%ld)\n",
+                         full.c_str(), ag.c_str(), as_status);
+        GateStatEntry* raw = entry.get();
+        {
+            std::lock_guard<std::mutex> lock(statHandlesMutex);
+            statHandles.insert(raw);
+        }
+        std::lock_guard<std::mutex> lock(statEntriesMutex);
+        statEntries[full] = std::move(entry);
+    };
+    // "vctotal" is a count of Virtual Connection *objects* (one per downstream client's claim
+    // on one PV), not of raw TCP connections -- it equals "active" (the PV-count) except when
+    // more than one client claims the same PV, in which case vctotal > active. See
+    // docs/Gateway.html's own description of the old PCAS-based Gateway's vctotal for this
+    // same distinction. Deliberately excludes any client's connections to the statistics PVs
+    // themselves (GateStatEntry has no downstreamRefs at all), so merely querying
+    // gwtest:vctotal never perturbs its own answer.
+    add("vctotal", []{ return sum_channels([](GateChannel* c){
+        return (long)c->downstreamRefs.load(std::memory_order_relaxed);
+    }); });
+    add("pvtotal", []{ return count_channels([](GateChannel*){ return true; }); });
+    add("connected", []{ return count_channels([](GateChannel* c){
+        return c->caChid && ca_state(c->caChid) == cs_conn;
+    }); });
+    add("active", []{ return count_channels([](GateChannel* c){
+        return c->caChid && ca_state(c->caChid) == cs_conn && c->downstreamRefs.load(std::memory_order_relaxed) > 0;
+    }); });
+    add("inactive", []{ return count_channels([](GateChannel* c){
+        return c->caChid && ca_state(c->caChid) == cs_conn && c->downstreamRefs.load(std::memory_order_relaxed) == 0;
+    }); });
+    errlogPrintf("gate_init_stats_cmd: statistics PVs created under prefix '%s:' (as_group='%s')\n",
+                 prefix, ag.c_str());
 }
 
 void gate_add_pv_cmd(const char* pattern, const char* client_name, const char* as_group, const char* target) {

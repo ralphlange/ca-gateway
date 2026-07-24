@@ -92,6 +92,7 @@ struct dbChannel * dbChannel_create(const char *name) {
     void* gh = gate_create_channel_for_client(name, gate_current_client_hostname());
     if (!gh) return NULL;
     gate_wait_channel_ready(gh);
+    gate_channel_claim(gh);
     struct dbChannelGate *gchan = (struct dbChannelGate *)calloc(1, sizeof(struct dbChannelGate));
     gchan->gateHandle = gh;
     strncpy(gchan->name, name, sizeof(gchan->name)-1);
