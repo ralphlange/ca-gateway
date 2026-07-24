@@ -16,6 +16,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+#include <epicsTimer.h>
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
 #include <yajl_parse.h>
@@ -138,17 +139,23 @@ static std::mutex channelsMutex;
 static std::map<std::string, std::shared_ptr<GateClient>> clients;
 
 // --- Gateway statistics PVs (gateInitStats), comparable to the old PCAS-based Gateway's
-// STAT_PVS (vctotal/pvtotal/connected/active/inactive; see CLAUDE.md). Unlike a real
+// STAT_PVS (vctotal/pvtotal/connected/active/inactive; see CLAUDE.md) and RATE_STATS
+// (clientEventRate/clientPostRate, here split into an upstream/downstream pair each for
+// update-count and byte-volume -- see the RateCounters comment below). Unlike a real
 // GateChannel, a GateStatEntry has no upstream chid at all -- its value is a live snapshot
-// computed on demand from `channels`/rsrv's own client list, not cached CA event data. RATE_STATS
-// (event-rate timers), CONTROL_PVS (debug/report/quit flags -- iocsh already covers that role
-// here) and HEARTBEAT_PV don't map onto anything meaningful in this architecture and are
-// skipped, per CLAUDE.md.
+// (or, for the rate entries, a periodically-refreshed cached one) computed from `channels`/
+// rsrv's own client list, not cached CA event data. CAS_DIAGNOSTICS (a PCAS-library-native
+// diagnostic with no rsrv equivalent), CONTROL_PVS (debug/report/quit flags -- iocsh already
+// covers that role here) and HEARTBEAT_PV don't map onto anything meaningful in this
+// architecture and are skipped, per CLAUDE.md.
 struct GateStatEntry {
     std::string name;
-    std::function<long()> getter;
+    std::function<double()> getter;
+    bool isDouble = false; // false: DBF_LONG counter; true: DBF_DOUBLE rate (Hz or bytes/sec)
+    std::string units;     // only consulted for GR_*/CTRL_* requests of a rate entry
+    short precision = 0;   // ditto
     ASMEMBERPVT asMember = NULL;
-    long lastValue = -1;
+    double lastValue = -1;
 
     struct Sub {
         void (*cb)(void*, void*, int, void*);
@@ -176,6 +183,77 @@ static bool is_stat_sub(const void* h) {
     std::lock_guard<std::mutex> lock(statHandlesMutex);
     return statSubHandles.count(h) != 0;
 }
+
+// Defined below (after count_channels()/sum_channels(), which its callers -- and this file's
+// other statistics-PV plumbing -- build on); forward-declared so RateStatsTimer::expire() can
+// call it.
+static void notify_stats_changed();
+
+// Comparable to the old PCAS-based Gateway's RATE_STATS (clientEventRate/clientPostRate),
+// but split explicitly by direction (upstream: gateway<-IOC, downstream: gateway->client) and
+// paired update-count/byte-volume rates rather than just one event rate each: an "update" is
+// one event delivered (an upstream monitor callback landing, or one downstream client
+// receiving one posted value), a "volume" is the size in bytes of that event's raw
+// DBR_TIME_<native> payload (0 for a connection-state-change event, which has no payload).
+// `record()` is called from the hot event-delivery paths (ca_event_cb/ca_meta_cb/ca_conn_cb/
+// gate_add_event) and just accumulates atomically; `tick()` is called once per
+// RATE_STATS_INTERVAL by RateStatsTimer::expire() to turn the accumulated deltas into a
+// per-second rate, mirroring the old gateRateStatsTimer's delta-count/delta-time computation.
+struct RateCounters {
+    std::atomic<uint64_t> events{0};
+    std::atomic<uint64_t> bytes{0};
+    uint64_t lastEvents = 0;
+    uint64_t lastBytes = 0;
+    std::atomic<double> eventRate{0.0};
+    std::atomic<double> byteRate{0.0};
+
+    void record(size_t n) {
+        events.fetch_add(1, std::memory_order_relaxed);
+        bytes.fetch_add(n, std::memory_order_relaxed);
+    }
+    void tick(double dtSeconds) {
+        uint64_t e = events.load(std::memory_order_relaxed);
+        uint64_t b = bytes.load(std::memory_order_relaxed);
+        eventRate.store((double)(e - lastEvents) / dtSeconds, std::memory_order_relaxed);
+        byteRate.store((double)(b - lastBytes) / dtSeconds, std::memory_order_relaxed);
+        lastEvents = e;
+        lastBytes = b;
+    }
+};
+static RateCounters g_upstreamRate;   // events/bytes received from upstream IOCs
+static RateCounters g_downstreamRate; // events/bytes posted to downstream clients
+
+static const double RATE_STATS_INTERVAL = 2.0; // seconds, matches old code's typical period
+
+// Periodically converts the RateCounters' raw accumulators into per-second rates and pushes a
+// statistics-PV update (notify_stats_changed() also runs off of real channel/connection
+// activity, but rates must keep refreshing -- decaying towards 0 -- even when nothing else
+// happens to trigger it). Only instantiated once gateInitStats actually registers a rate
+// entry (see gate_init_stats_cmd()), so a gateway that never enables statistics never pays for
+// a background timer thread.
+class RateStatsTimer : public epicsTimerNotify {
+public:
+    explicit RateStatsTimer(epicsTimerQueueActive& queue)
+        : timer(queue.createTimer()), prev(epicsTime::getCurrent()) {
+        timer.start(*this, RATE_STATS_INTERVAL);
+    }
+    ~RateStatsTimer() { timer.destroy(); }
+    expireStatus expire(const epicsTime& currentTime) override {
+        double dt = currentTime - prev;
+        prev = currentTime;
+        if (dt > 0) {
+            g_upstreamRate.tick(dt);
+            g_downstreamRate.tick(dt);
+            notify_stats_changed();
+        }
+        return expireStatus(epicsTimerNotify::restart, RATE_STATS_INTERVAL);
+    }
+private:
+    epicsTimer& timer;
+    epicsTime prev;
+};
+static RateStatsTimer* g_rateStatsTimer = nullptr;
+static std::once_flag g_rateStatsTimerOnce;
 
 template <typename Pred>
 static long count_channels(Pred pred) {
@@ -206,7 +284,7 @@ static void notify_stats_changed() {
         std::lock_guard<std::mutex> lock(statEntriesMutex);
         for (auto& kv : statEntries) {
             GateStatEntry* e = kv.second.get();
-            long v = e->getter();
+            double v = e->getter();
             if (v != e->lastValue) {
                 e->lastValue = v;
                 changed.push_back(e);
@@ -260,7 +338,12 @@ static void ca_meta_cb(struct event_handler_args args) {
     }
     if (ctx->msub && ctx->data) {
         std::lock_guard<std::mutex> lock(ctx->msub->mtx);
+        size_t sz = ctx->data->data.size();
         for (auto usub : ctx->msub->userSubs) {
+            // This is the deferred delivery of the same upstream event ca_event_cb() already
+            // counted as received -- only count it as a downstream post here, once per
+            // subscriber it actually reaches.
+            g_downstreamRate.record(sz);
             // See ca_event_cb()'s comment: pass ctx->data itself as the "db_field_log" argument
             // so gate_get_count() serves this specific (deferred) event's own data.
             usub->cb(usub->user_arg, usub->dbchan, 0, (void*)ctx->data.get());
@@ -287,6 +370,9 @@ static void ca_event_cb(struct event_handler_args args) {
     newData->count = args.count;
     size_t sz = dbr_size_n(args.type, args.count);
     newData->data.assign((char*)args.dbr, (char*)args.dbr + sz);
+    // One upstream update received, regardless of how many downstream clients it's fanned out
+    // to below (that fan-out is what g_downstreamRate counts instead).
+    g_upstreamRate.record(sz);
     int dbf = gate_dbr_to_dbf(args.type);
     gate_format_extract_time(dbf, args.dbr, &newData->status, &newData->severity, &newData->stamp);
     bool isProperty = (msub->mask & DBE_PROPERTY) != 0;
@@ -298,6 +384,7 @@ static void ca_event_cb(struct event_handler_args args) {
         msub->lastData = newData;
         if (!isProperty) {
             for (auto usub : msub->userSubs) {
+                g_downstreamRate.record(sz);
                 // usub->cb is really rsrv's read_reply(pArg, dbChannel*, eventsRemaining,
                 // db_field_log*): pass the real dbChannel* (not msub), eventsRemaining=0 (so
                 // its `if (!eventsRemaining) cas_send_bs_msg(...)` actually flushes this event
@@ -361,6 +448,9 @@ static void ca_conn_cb(struct connection_handler_args args) {
         get_or_create_mask_sub(gchan, args.chid, GATE_DEFAULT_MASK);
         refresh_static_meta(gchan, args.chid, nullptr, nullptr);
     }
+    // A connection-state transition is itself an upstream-originated event (no value payload,
+    // hence size 0 -- it doesn't contribute to the upstream volume rate, only the event rate).
+    g_upstreamRate.record(0);
     // Either direction can move the "connected"/"active"/"inactive" statistics PVs.
     notify_stats_changed();
 }
@@ -507,10 +597,10 @@ void gate_wait_channel_ready(void* handle) {
 // is told the record's real type/array size instead of a hardcoded DBR_DOUBLE/1, which broke
 // every non-double and every array/waveform PV (clients that promote their request type from
 // the reported native type, e.g. pyepics, would ask for the wrong representation entirely).
-// Statistics PVs (gateInitStats) are always a scalar DBF_LONG counter -- there's no upstream
-// chid to ask.
+// Statistics PVs (gateInitStats) are always a scalar DBF_LONG counter or (for the rate
+// entries) a DBF_DOUBLE -- there's no upstream chid to ask.
 int gate_native_ca_type(void* handle) {
-    if (is_stat_handle(handle)) return DBR_LONG;
+    if (is_stat_handle(handle)) return ((GateStatEntry*)handle)->isDouble ? DBR_DOUBLE : DBR_LONG;
     GateChannel* gchan = (GateChannel*)handle;
     if (!gchan->caChid || ca_state(gchan->caChid) != cs_conn) return -1;
     return ca_field_type(gchan->caChid);
@@ -560,14 +650,23 @@ void* gate_get_as_member(void* handle) {
 int gate_get_count(void* handle, int buffer_type, void* pbuffer, long* nRequest, void* pfl) {
     if (is_stat_handle(handle)) {
         // No cached event data at all -- a statistics PV's value is always computed fresh,
-        // live, from current gateway state, whether this call came from a plain get or from
-        // a monitor delivery (pfl is always NULL for these; see gate_add_event()/
-        // notify_stats_changed() below).
+        // live, from current gateway state (or, for a rate entry, from the last periodic
+        // RateStatsTimer tick), whether this call came from a plain get or from a monitor
+        // delivery (pfl is always NULL for these; see gate_add_event()/notify_stats_changed()
+        // below).
         GateStatEntry* stat = (GateStatEntry*)handle;
-        epicsInt32 value = (epicsInt32)stat->getter();
+        double v = stat->getter();
         epicsTimeStamp stamp;
         epicsTimeGetCurrent(&stamp);
         GateStaticMeta meta;
+        meta.precision = stat->precision;
+        strncpy(meta.units, stat->units.c_str(), sizeof(meta.units) - 1);
+        if (stat->isDouble) {
+            epicsFloat64 value = v;
+            return gate_format_response(G_S_DBF_DOUBLE, buffer_type, pbuffer, nRequest, 1,
+                                         0, 0, stamp, &value, meta);
+        }
+        epicsInt32 value = (epicsInt32)v;
         return gate_format_response(G_S_DBF_LONG, buffer_type, pbuffer, nRequest, 1,
                                      0, 0, stamp, &value, meta);
     }
@@ -690,6 +789,8 @@ void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, voi
         data = msub->lastData;
     }
     if (data) {
+        // The initial delivery on subscribe is a real downstream post too.
+        g_downstreamRate.record(data->data.size());
         // See ca_event_cb()'s comment: pass data itself as the "db_field_log" argument.
         usub->cb(usub->user_arg, usub->dbchan, 0, (void*)data.get());
     }
@@ -736,22 +837,28 @@ void gate_create_client_cmd(const char* name, const char* addr_list, int auto_ad
 }
 
 // Registers the gateInitStats iocsh command's statistics PVs under "<prefix>:" -- see the
-// GateStatEntry comment above. Comparable to the old PCAS-based Gateway's STAT_PVS
-// (vctotal/pvtotal/connected/active/inactive); RATE_STATS/CAS_DIAGNOSTICS (event-rate timers),
-// CONTROL_PVS (report/reload/quit flags -- iocsh commands already cover that role here) and
-// HEARTBEAT_PV (dead code even in the old implementation -- never actually updated) have no
-// sensible equivalent in this architecture and are skipped.
+// GateStatEntry/RateCounters comments above. Comparable to the old PCAS-based Gateway's
+// STAT_PVS (vctotal/pvtotal/connected/active/inactive) and RATE_STATS (clientEventRate/
+// clientPostRate, here as an upstream/downstream x update/volume 2x2); CAS_DIAGNOSTICS
+// (a PCAS-library-native diagnostic with no rsrv equivalent), CONTROL_PVS (report/reload/quit
+// flags -- iocsh commands already cover that role here) and HEARTBEAT_PV (dead code even in
+// the old implementation -- never actually updated) have no sensible equivalent in this
+// architecture and are skipped.
 void gate_init_stats_cmd(const char* prefix, const char* as_group) {
     if (!prefix || !prefix[0]) {
         errlogPrintf("gate_init_stats_cmd: empty prefix, ignoring\n");
         return;
     }
     std::string ag = (as_group && as_group[0]) ? as_group : "DEFAULT";
-    auto add = [&](const char* suffix, std::function<long()> getter) {
+    auto add = [&](const char* suffix, std::function<double()> getter,
+                    bool isDouble = false, const char* units = "", short precision = 0) {
         std::string full = std::string(prefix) + ":" + suffix;
         auto entry = std::make_unique<GateStatEntry>();
         entry->name = full;
         entry->getter = std::move(getter);
+        entry->isDouble = isDouble;
+        entry->units = units;
+        entry->precision = precision;
         long as_status = asAddMember(&entry->asMember, ag.c_str());
         if (as_status && as_status != S_asLib_asNotActive)
             errlogPrintf("gate_init_stats_cmd: asAddMember('%s', as_group='%s') failed (status=%ld)\n",
@@ -771,19 +878,36 @@ void gate_init_stats_cmd(const char* prefix, const char* as_group) {
     // same distinction. Deliberately excludes any client's connections to the statistics PVs
     // themselves (GateStatEntry has no downstreamRefs at all), so merely querying
     // gwtest:vctotal never perturbs its own answer.
-    add("vctotal", []{ return sum_channels([](GateChannel* c){
+    add("vctotal", []{ return (double)sum_channels([](GateChannel* c){
         return (long)c->downstreamRefs.load(std::memory_order_relaxed);
     }); });
-    add("pvtotal", []{ return count_channels([](GateChannel*){ return true; }); });
-    add("connected", []{ return count_channels([](GateChannel* c){
+    add("pvtotal", []{ return (double)count_channels([](GateChannel*){ return true; }); });
+    add("connected", []{ return (double)count_channels([](GateChannel* c){
         return c->caChid && ca_state(c->caChid) == cs_conn;
     }); });
-    add("active", []{ return count_channels([](GateChannel* c){
+    add("active", []{ return (double)count_channels([](GateChannel* c){
         return c->caChid && ca_state(c->caChid) == cs_conn && c->downstreamRefs.load(std::memory_order_relaxed) > 0;
     }); });
-    add("inactive", []{ return count_channels([](GateChannel* c){
+    add("inactive", []{ return (double)count_channels([](GateChannel* c){
         return c->caChid && ca_state(c->caChid) == cs_conn && c->downstreamRefs.load(std::memory_order_relaxed) == 0;
     }); });
+    // Two pairs, each upstream (gateway<-IOC) + downstream (gateway->client): one pair counts
+    // updates (events/sec), the other counts volume (bytes/sec of each event's raw
+    // DBR_TIME_<native> payload) -- see RateCounters' comment for exactly what's counted where.
+    add("upstreamEventRate", []{ return g_upstreamRate.eventRate.load(std::memory_order_relaxed); },
+        true, "Hz", 2);
+    add("downstreamEventRate", []{ return g_downstreamRate.eventRate.load(std::memory_order_relaxed); },
+        true, "Hz", 2);
+    add("upstreamVolumeRate", []{ return g_upstreamRate.byteRate.load(std::memory_order_relaxed); },
+        true, "B/s", 1);
+    add("downstreamVolumeRate", []{ return g_downstreamRate.byteRate.load(std::memory_order_relaxed); },
+        true, "B/s", 1);
+    // Started lazily, once, on the first gateInitStats call -- a gateway that never enables
+    // statistics never spins up the background rate-ticking timer thread.
+    std::call_once(g_rateStatsTimerOnce, []{
+        epicsTimerQueueActive& queue = epicsTimerQueueActive::allocate(true);
+        g_rateStatsTimer = new RateStatsTimer(queue);
+    });
     errlogPrintf("gate_init_stats_cmd: statistics PVs created under prefix '%s:' (as_group='%s')\n",
                  prefix, ag.c_str());
 }
