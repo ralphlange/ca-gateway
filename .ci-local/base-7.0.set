@@ -1,5 +1,15 @@
 MODULES=pcas caPutLog
 
-BASE=7.0
+# Pinned to a release rather than tracking the 7.0 branch tip: epics-base commit 4128a7c07
+# ("rsrv: cross-check m_count message field with payload buffer length", 2026-06-24) makes an
+# IOC force-disconnect any client that does a scalar DBR_STRING put. Its new
+# "dbr_size_n(m_dataType, m_count) > m_postsize -> RSRV_ERROR" check assumes the payload is
+# always the full 40-byte DBR_STRING, but Base's own CA client deliberately truncates scalar
+# strings to CA_MESSAGE_ALIGN(strlen+1) (comQueSend::insertRequestWithPayLoad,
+# modules/ca/src/client/comQueSend.cpp) -- so e.g. "20.0" sends m_postsize=8 against an
+# expected 40 and is rejected. That breaks caput and several testTop tests, with no gateway
+# involvement at all. R7.0.10 predates it. Revert this to "7.0" once upstream has a fix.
+# (ci-scripts only accepts a tag or branch name here, not a commit hash -- see .ci/cue.py.)
+BASE=R7.0.10
 BASE_RECURSIVE=NO
 
