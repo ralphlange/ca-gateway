@@ -58,6 +58,18 @@ static const iocshFuncDef pfDef = GATE_IOCSH_FUNCDEF("gateLoadPutLogFile", 1, pf
     "Configure a local put-log file (drop-in replacement for the old Gateway's -putlog <file>)");
 static void pfCall(const iocshArgBuf *a) { gate_load_put_log_file_cmd(a[0].sval); }
 
+static const iocshArg qlA0 = { "maxElements", iocshArgInt }, qlA1 = { "maxBytes", iocshArgInt }, qlA2 = { "policy", iocshArgString };
+static const iocshArg * const qlAs[] = { &qlA0, &qlA1, &qlA2 };
+static const iocshFuncDef qlDef = GATE_IOCSH_FUNCDEF("gateSetQueueLimits", 3, qlAs,
+    "Bound each downstream client's delivery queue (0 = unlimited; policy: oldest|newest)");
+static void qlCall(const iocshArgBuf *a) { gate_set_queue_limits_cmd(a[0].ival, a[1].ival, a[2].sval); }
+
+static const iocshArg qrA0 = { "level", iocshArgInt };
+static const iocshArg * const qrAs[] = { &qrA0 };
+static const iocshFuncDef qrDef = GATE_IOCSH_FUNCDEF("gateQueueReport", 1, qrAs,
+    "Report downstream delivery queue totals (level > 0: also per connected client)");
+static void qrCall(const iocshArgBuf *a) { gate_queue_report_cmd(a[0].ival); }
+
 void gateIocRegister(void) {
     iocshRegister(&clDef, clCall);
     iocshRegister(&pvDef, pvCall);
@@ -67,6 +79,8 @@ void gateIocRegister(void) {
     iocshRegister(&ptDef, ptCall);
     iocshRegister(&pjDef, pjCall);
     iocshRegister(&pfDef, pfCall);
+    iocshRegister(&qlDef, qlCall);
+    iocshRegister(&qrDef, qrCall);
 }
 }
 

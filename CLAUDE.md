@@ -14,12 +14,22 @@ the pre-existing `testTop` pytest suite (adapted to the new config mechanism) co
 exercise the gateway end-to-end, since virtually every real CA client (`pyepics` included)
 requests one of those formats by default. It also now supports real ASG/UAG/HAG
 access-security enforcement (via `gateLoadAccess`/`asInitFile`, see Architecture below) and
-pvlist-level `DENY`/`DENY FROM <hosts>` route hiding. Other parts of the original Gateway's
-feature set (stat/heartbeat/rate PVs, caPutLog, multi-server listening, etc.) are **still not
-implemented** — the corresponding `testTop` tests are marked `skip` with a reason, not adapted.
-Recent commits were produced with an AI coding agent
-(`google-labs-jules[bot]`); expect rough edges and re-verify behavior against actual EPICS
-semantics rather than trusting comments or prior commit messages.
+pvlist-level `DENY`/`DENY FROM <hosts>` route hiding. It now also has gateway statistics and
+rate PVs (`gateInitStats`), caPutLog put-logging in all three of the old Gateway's flavors
+(traditional-text and JSON to a network log server, plus a local `-putlog`-equivalent file),
+and bounded per-downstream-client event queues — all described under Architecture below.
+
+Of the original Gateway's feature set, what remains unimplemented is the `CONTROL_PVS`
+write-to-trigger flags (`commandFlag`/`report1Flag`/…/`quitFlag`: the iocsh prompt already
+covers that role here), the `heartbeat` PV (dead code even in the old implementation — nothing
+ever updated it), and the `RATE_STATS`/`CAS_DIAGNOSTICS` counters that have no rsrv equivalent
+(`loopRate`, `cpuFract`, `load`, `serverEventRate`). "Multi-server listening" is **not** a gap:
+the old `-sip`/`-sport` options only set `EPICS_CAS_INTF_ADDR_LIST`/`EPICS_CAS_SERVER_PORT`, and
+the vendored `caservertask.c` already binds one socket per interface in that list; only the CLI
+convenience wrapper is absent, and this gateway deliberately has no CLI at all.
+
+Some commits were produced with AI coding agents; expect rough edges and re-verify behavior
+against actual EPICS semantics rather than trusting comments or prior commit messages.
 
 ## Architecture
 
@@ -68,14 +78,18 @@ Three layers, bottom to top:
      PV" broadcast, i.e. before it even opens a connection. `gateShim.c` overrides it via
      `gate_channel_exists()` (a thin, side-effect-free wrapper around
      `gate_create_channel()`'s route matching).
-   - Several `dbEventCtx`-consuming functions (`db_add_extra_labor_event`,
+   - Every `dbEventCtx`-consuming function (`db_add_extra_labor_event`,
      `db_flush_extra_labor_event`, `db_event_flow_ctrl_mode_on/off`, `db_event_change_priority`)
-     are real, un-shimmed Base functions too, and `db_init_events()` here returns a fake
-     non-NULL handle (`(dbEventCtx)1`) rather than a real one — calling any of the real
-     versions against that fake handle segfaults. They're stubbed as no-ops in `gateShim.c`,
-     consistent with `db_post_extra_labor()`/`db_close_events()` already being no-ops (nothing
-     ever actually queues/delivers the extra-labor callback here). If a future Base version
-     adds another function that takes a `dbEventCtx`, it needs the same treatment.
+     is a real, un-shimmed Base function that would dereference a real `event_user` and crash,
+     so all of them must be overridden in `gateShim.c`. `db_init_events()` returns our own
+     per-client `struct GateEventCtx` (rsrv creates exactly one per TCP client, `client->evuser`
+     in `create_tcp_client()`), which holds the extra-labor callback registration *and* that
+     client's delivery queue — see layer 3. So `db_start_events()`/`db_close_events()` start and
+     stop the queue's reader thread, and `db_event_flow_ctrl_mode_on/off` (CA_PROTO_EVENTS_OFF/
+     ON) really do pause/resume delivery rather than being no-ops. `db_flush_extra_labor_event`,
+     `db_event_change_priority`, `db_event_enable/disable` and `db_post_single_event` remain
+     no-ops. If a future Base version adds another `dbEventCtx`-taking function, it needs the
+     same treatment.
    - **`dbFldTypes.h`'s database field-type ordering is not the same across supported Base
      versions**, and this bit us for real: Base 7.0 inserted `DBF_INT64`/`DBF_UINT64` before
      `FLOAT`/`DOUBLE`, so e.g. `DBF_DOUBLE` is `8` on 3.15 but `10` on 7.0.
@@ -107,6 +121,48 @@ Three layers, bottom to top:
      subscriptions always request `DBR_TIME_<native type>` (never bare native), which is what
      gives real status/severity/timestamp; a separate one-shot `DBR_CTRL_<native type>` get
      (repeated on `DBE_PROPERTY` events) caches precision/units/limits/enum-strings.
+   - **Never delivers an event to a downstream client from an upstream thread.** Each
+     downstream client has a `GateClientQueue` (multiple-writer/single-reader), created and torn
+     down with its `dbEventCtx` (see layer 2); upstream callbacks only push, and a per-client
+     reader thread pops and calls rsrv's `read_reply()`. This matters because `read_reply()`
+     ends in `cas_send_bs_msg()` → a **blocking** `send()` (rsrv sets neither `SO_SNDTIMEO` nor
+     non-blocking mode), while libca runs a single thread per upstream TCP circuit that both
+     reads the wire *and* dispatches callbacks (`tcpRecvThread::run()`). Delivering inline
+     therefore let one client that stopped draining its socket stall every other client on that
+     PV *and* all traffic from that whole upstream IOC. A real IOC avoids this with `dbEvent.c`'s
+     per-client event task; this is the equivalent. Queue entries hold a `shared_ptr<GateData>`,
+     so one update fanned out to N subscribers is stored once and reference-counted until the
+     last queue drains it. Queues are bounded by element count and/or payload bytes (`0` =
+     unlimited; default 2000 / 16 MB) with a `oldest`/`newest` overflow policy, both set live by
+     `gateSetQueueLimits`; counters appear as statistics PVs and in `gateQueueReport`. Note
+     `gate_cancel_event()` must purge a subscription's queued entries and wait out any in-flight
+     delivery before freeing it — rsrv cancels subscriptions from the client's TCP thread
+     concurrently with that client's reader thread.
+   - Serves gateway statistics PVs under a configurable prefix (`gateInitStats <prefix>
+     [as_group]`), comparable to the old Gateway's `STAT_PVS`/`RATE_STATS`. These are
+     `GateStatEntry` objects, not `GateChannel`s: they have no upstream `chid`, bypass route/DENY
+     matching entirely, are read-only, and compute their value live on each get. Counts
+     (`DBF_LONG`): `vctotal` (sum of per-channel downstream claim counts — one client's claim on
+     one PV, so it exceeds `active` when clients share a PV), `pvtotal`, `connected`, `active`,
+     `inactive`, plus `queueDepth`/`queueBytes`/`queueMaxDepth`/`queueMaxBytes`/`queueDropped`.
+     Rates (`DBF_DOUBLE`, refreshed by a lazily-started 2 s `epicsTimer`): `upstreamEventRate`/
+     `downstreamEventRate` (Hz) and `upstreamVolumeRate`/`downstreamVolumeRate` (B/s) — one
+     upstream tick per event received from an IOC, one downstream tick per event actually posted
+     to a client, so they legitimately differ (e.g. by fan-out, or when a client's subscription
+     mask differs from the gateway's own eager `DBE_VALUE|DBE_PROPERTY` one, which makes two
+     independent upstream subscriptions).
+   - caPutLog put-logging, driven by our own `asTrapWriteListener` (requires `TRAPWRITE` on the
+     ASG rule). Three independently configurable sinks: `gateLoadPutLogText`/`gateLoadPutLogJson`
+     send to a network log server via Base's own `logClient`, and `gateLoadPutLogFile` writes the
+     old Gateway's local `-putlog` file format. **None of caPutLog's runtime code can be used
+     here**: its own entry points all call `caPutLogAsInit()`, which registers a listener that
+     builds a `LOGDATA` via `dbGetField()` against a real record — and `dbGetRset()` returns NULL
+     here. That also rules out `caPutLogTaskStart/Send` and `caPutLogDataCalloc/Free`, which look
+     harmless but share a free list initialized *only* inside `caPutLogAsInit()` (confirmed with
+     gdb: SIGSEGV in `freeListCalloc`). Only caPutLog's plain data definitions (`LOGDATA`/
+     `VALUE`) and config enum are used — it is a header-only dependency, no library is linked.
+     Consequently there is no burst coalescing, so config levels 1 and 2 are equivalent. The
+     whole feature is compiled out unless `CAPUTLOG` is set (see Build).
    - `GateFormat.cpp` hand-assembles `DBR_STS_*/TIME_*/GR_*/CTRL_*` responses from that cached
      data — there's no real record/`rset` behind a channel for `dbAccess`'s normal metadata-
      filling to work against. It always uses the real struct types from `<db_access.h>` (never
@@ -168,9 +224,10 @@ Three layers, bottom to top:
 
 `main()` (`GateMain.cpp`) calls `gate_init()`, `rsrvIocRegister()` (registers `rsrv` with the
 shim's `dbRegisterServer`), then drives the registered server's `init()`/`run()`, and finally
-drops into `iocsh()`. New iocsh commands registered here: `gateCreateClient`,
-`gateAddPV <pattern> <client> <as_group> [target]`, `gateLoadConfig`, `gateLoadAccess <file>`
-(loads an ACF via `asInitFile`) (plus `rsrv`'s own `casr`).
+drops into `iocsh()`. All the `gate*` iocsh commands are registered here — see the command
+reference under "Running / manual smoke test" below (plus `rsrv`'s own `casr`). The
+`gateLoadPutLog*` commands are registered unconditionally even in a build without caPutLog
+support, where they just report that it wasn't built in.
 
 ## Build
 
@@ -182,6 +239,13 @@ Standard EPICS "extension"/module build (`configure/RULES` from EPICS Base's bui
   Architecture above.
 - Requires `pcre2-8` (`libpcre2-dev` at build time, `libpcre2-8` at runtime) —
   `gateway_SYS_LIBS += pcre2-8` in `src/Makefile`.
+- caPutLog support is **optional**, selected purely by whether `CAPUTLOG = /path/to/caPutLog`
+  is set in `RELEASE.local`: `src/Makefile` turns that into `-DWITH_CAPUTLOG`, which is what
+  `GateLogic.cpp` guards the whole put-logging section on. It's a header-only dependency (no
+  library is linked — see Architecture), so only `$(CAPUTLOG)/include` needs to exist. Without
+  it the gateway builds fine and the `gateLoadPutLog*` commands report the feature is absent.
+  Both configurations are worth building when touching that code; `make -C src CAPUTLOG=`
+  overrides an inherited setting for a one-off check.
 - Build: `make` from the repo root (or `make -C src` for just the gateway sources).
 - The `PROD_IOC` target is `gateway`; the built binary lands at
   `bin/<EPICS_HOST_ARCH>/gateway`.
@@ -194,8 +258,10 @@ Standard EPICS "extension"/module build (`configure/RULES` from EPICS Base's bui
 `CAS_DIAGNOSTICS`, `HANDLE_EXCEPTIONS`). These are inert leftovers, not evidence a feature is
 implemented — none of them gate anything in the current `GateLogic.cpp`/`rsrv`-based code
 path. In particular, `USE_DENY_FROM` does **not** control the `DENY FROM <hosts>` route
-support described above — that's unconditional, plain runtime route data, not a compile-time
-option.
+support described above, and `STAT_PVS`/`RATE_STATS` do **not** control the statistics and rate
+PVs — those are unconditional runtime features enabled by the `gateInitStats` iocsh command.
+`WITH_CAPUTLOG` (from `CAPUTLOG` in `RELEASE.local`, above) is the only compile-time feature
+switch this branch actually honors.
 
 ## Running / manual smoke test
 
@@ -212,8 +278,22 @@ gateCreateClient <name> <addr_list> <auto_addr 0|1> <port>   # define an upstrea
 gateAddPV <pcre-pattern> <client-name> <as-group> [target]   # route matching PV names to it
 gateLoadConfig <file.json>                                    # do both from a JSON file
 gateLoadAccess <file.acf>                                     # load an ASG/UAG/HAG access file
+gateInitStats <prefix> [as-group]                             # create <prefix>:* statistics PVs
+gateLoadPutLogText <addr> <config> <timeout>                  # caPutLog: traditional, to network
+gateLoadPutLogJson <addr> <config> <timeout>                  # caPutLog: JSON, to network
+gateLoadPutLogFile <filename>                                 # caPutLog: local file (old -putlog)
+gateSetQueueLimits <maxElements> <maxBytes> <oldest|newest>   # bound per-client event queues
+gateQueueReport <level>                                       # queue totals; >0 = per client
 casr <level>                                                  # rsrv's built-in server report
 ```
+
+Ordering matters for two of these: `gateLoadAccess` must come before `gateLoadConfig` (so
+`asInitialize` runs before any route/channel exists) and before `gateInitStats` (so the stats
+PVs' ASG membership registers while access security is already active). Put-logging needs
+`TRAPWRITE` on the relevant ASG rule or the trap listener is never invoked at all. The
+put-log `<config>` is caPutLog's own convention: `-1` disable / `0` on-change / `1` all /
+`2` all-no-filter (1 and 2 behave identically here); `<timeout>` is accepted for interface
+compatibility but unused, as there is no burst coalescing.
 
 A freshly-created channel has no cached data until its upstream connection completes (async);
 a `caget`/`caput` issued immediately after first referencing a brand-new PV name can race that
@@ -243,13 +323,28 @@ adapted to run against the `rsrv`-based reimplementation:
   `testTop/pyTestsApp/access.txt` (`ASG(DEFAULT) { RULE(1,WRITE) }`, loaded for every test via
   `standard_env`/`default_access`) is what keeps every non-permissions test's full read+write
   access unchanged now that AS enforcement is actually active.
-- `test_property_cache.py` and `test_logging.py` are skipped outright (Gateway stats PVs /
-  caPutLog, respectively, aren't implemented); one test in `test_enum_property_cache.py` is
-  skipped for the same stats-PV reason (its two siblings were already `xfail` for an unrelated
-  bug, unchanged). `test_permissions.py` (real ASG/UAG/HAG read/write enforcement plus pvlist
-  `DENY`/`DENY FROM` route-hiding) is no longer skipped and should pass.
+- `run_gateway()` also takes `stats_prefix` (default `gwtest`, so `conftest.GatewayStats` and
+  the `gwtest:.* ALLOW` line already in `pvlist_bre.txt`/`pvlist_pcre.txt` work), plus
+  `put_log_text_addr`/`put_log_json_addr`/`put_log_file` for the caPutLog sinks.
+- **The whole suite should pass with nothing skipped**, given `caproto` installed (only
+  `test_permissions.py`'s `util.py` needs it) and a caPutLog-enabled build. The
+  `caputlog_supported` fixture detects the build variant by looking for the not-built-in stub's
+  message inside the gateway binary — rather than re-running `make`, which wouldn't apply to a
+  binary installed from elsewhere — and `test_logging.py`/`test_caputlog_network.py` skip on it.
+  Previously-skipped files that now run for real: `test_property_cache.py`,
+  `test_enum_property_cache.py`'s third test, and `test_logging.py` (11 parametrizations of the
+  local put-log file). Two tests in `test_enum_property_cache.py` remain `xfail` for unfixed
+  bug #58, unrelated.
+- `test_caputlog_network.py` is new (not from the legacy suite): it covers the text and JSON
+  network sinks against a local TCP listener, and the on-change filter.
 - Everything else (`test_simple.py`, the `test_dbe_*.py` files, `test_subscriptions.py`,
   `test_cs_studio.py`, `test_structures.py`, `test_enum_undefined_timestamp.py`,
   `test_waveform_with_ca_max_array_bytes.py`) exercises the gateway for real and should pass —
   these are exactly what the `DBR_STS_/TIME_/GR_/CTRL_` format-serving work in `GateFormat.cpp`
   and the PV-alias feature in `GateLogic.cpp` exist to support.
+- A full run takes ~11 minutes. When it fails in ways that look unrelated to your change,
+  suspect the `EPICS_BASE` checkout: an in-development Base was once picked up mid-session with
+  a broken rsrv bounds check that made *every* put-with-callback disconnect the client, which
+  surfaced here as four unrelated-looking property-cache failures. Reproducing with Base's own
+  `caput` against a plain `softIoc` (no gateway involved) is the fastest way to tell the two
+  apart.

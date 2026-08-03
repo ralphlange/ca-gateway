@@ -153,35 +153,46 @@ void dbChannel_put_notify(struct dbChannel *chan, int buffer_type, const void *p
  * A real dbEventCtx runs a background "event task" thread that drains queued work
  * (single-event callbacks, and the "extra labor" queue used for e.g. put-notify
  * completion replies -- see rsrv_extra_labor() in camessage.c) without blocking the
- * database. We have no database to protect and no such thread; db_start_events()
- * already reflects this by invoking its init_func synchronously instead of spawning a
- * task. For the same reason, db_post_extra_labor() below invokes the registered
- * extra-labor callback (rsrv_extra_labor) synchronously, right on the calling thread,
- * instead of queuing it for a background task that doesn't exist -- so it needs a
- * real per-client struct (not the old shared fake `1` handle) to remember which
- * function/arg db_add_extra_labor_event() registered.
+ * database. rsrv creates exactly one of these per TCP client (client->evuser, in
+ * create_tcp_client()), which makes it the natural home for this Gateway's own
+ * per-downstream-client delivery queue: db_init_events() creates the queue,
+ * db_start_events() starts its reader thread, db_close_events() stops and frees it. See
+ * GateLogic.cpp's GateClientQueue for why that decoupling matters (one slow client must not
+ * stall an upstream circuit).
+ *
+ * db_post_extra_labor() below still invokes the registered extra-labor callback
+ * (rsrv_extra_labor) synchronously on the calling thread rather than routing it through that
+ * queue -- it carries no event payload and rsrv only uses it to flush put-notify completions.
  */
 struct GateEventCtx {
     EXTRALABORFUNC *extraLaborFunc;
     void *extraLaborArg;
+    void *queue;
 };
 
 dbEventCtx db_init_events(void) {
     struct GateEventCtx *ctx = (struct GateEventCtx *)calloc(1, sizeof(struct GateEventCtx));
+    if (ctx) ctx->queue = gate_queue_create();
     return (dbEventCtx)ctx;
 }
 
 dbEventSubscription db_add_event(dbEventCtx ctx, struct dbChannel *chan, EVENTFUNC* user_sub, void *user_arg, unsigned int select) {
     struct dbChannelGate *gchan = (struct dbChannelGate *)((char*)chan - offsetof(struct dbChannelGate, chan));
+    struct GateEventCtx *gctx = (struct GateEventCtx *)ctx;
     /* user_sub is really rsrv's read_reply(pArg, dbChannel*, eventsRemaining, db_field_log*);
      * it must be invoked with the real dbChannel* (chan) -- NOT our internal handle -- since
      * read_reply() calls dbChannel_get_count(dbch, ...), which does pointer arithmetic on
      * dbch assuming it's really the `chan` member embedded in a dbChannelGate. */
-    return (dbEventSubscription)gate_add_event(gchan->gateHandle, (gate_event_callback*)user_sub, user_arg, chan, select);
+    return (dbEventSubscription)gate_add_event(gchan->gateHandle, (gate_event_callback*)user_sub,
+                                               user_arg, chan, select, gctx ? gctx->queue : NULL);
 }
 
 void db_cancel_event(dbEventSubscription sub) { gate_cancel_event((void*)sub); }
-void db_close_events(dbEventCtx ctx) { free(ctx); }
+void db_close_events(dbEventCtx ctx) {
+    struct GateEventCtx *gctx = (struct GateEventCtx *)ctx;
+    if (gctx) gate_queue_destroy(gctx->queue);
+    free(ctx);
+}
 void db_event_enable(dbEventSubscription sub) {}
 void db_event_disable(dbEventSubscription sub) {}
 void db_post_single_event(dbEventSubscription sub) {}
@@ -206,11 +217,23 @@ int db_add_extra_labor_event(dbEventCtx ctx, EXTRALABORFUNC *func, void *arg) {
     return DB_EVENT_OK;
 }
 void db_flush_extra_labor_event(dbEventCtx ctx) {}
-void db_event_flow_ctrl_mode_on(dbEventCtx ctx) {}
-void db_event_flow_ctrl_mode_off(dbEventCtx ctx) {}
+/* CA_PROTO_EVENTS_OFF/EVENTS_ON (events_off_action/events_on_action, camessage.c): now really
+ * implemented, by pausing/resuming this client's queue reader instead of being a no-op. */
+void db_event_flow_ctrl_mode_on(dbEventCtx ctx) {
+    struct GateEventCtx *gctx = (struct GateEventCtx *)ctx;
+    if (gctx) gate_queue_set_flow_ctrl(gctx->queue, 1);
+}
+void db_event_flow_ctrl_mode_off(dbEventCtx ctx) {
+    struct GateEventCtx *gctx = (struct GateEventCtx *)ctx;
+    if (gctx) gate_queue_set_flow_ctrl(gctx->queue, 0);
+}
 void db_event_change_priority(dbEventCtx ctx, unsigned epicsPriority) {}
 int db_start_events(dbEventCtx ctx, const char *taskname, void (*init_func)(void *), void *init_func_arg, unsigned osiPriority) {
+    struct GateEventCtx *gctx = (struct GateEventCtx *)ctx;
+    /* rsrv passes init_func == NULL (caservertask.c); a real dbEvent.c would run it on the
+     * event task for per-thread setup, so keep honoring it here for the same purpose. */
     if (init_func) init_func(init_func_arg);
+    if (gctx) gate_queue_start(gctx->queue, taskname, osiPriority);
     return 0;
 }
 

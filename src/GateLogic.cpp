@@ -1,6 +1,7 @@
 #include "gate_compat.h"
 #include "gate_db_interface.h"
 #include "GateFormat.h"
+#include "GateQueue.h"
 #include <string>
 #include <map>
 #include <vector>
@@ -10,8 +11,11 @@
 #include <chrono>
 #include <algorithm>
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <set>
+#include <epicsThread.h>
+#include <epicsString.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -105,6 +109,11 @@ struct GateChannel {
             void* user_arg;
             void* dbchan; // the real struct dbChannel* rsrv gave db_add_event(), NOT this MaskSub
             struct MaskSub* owner; // so gate_cancel_event() can find+erase itself
+            // The subscribing downstream client's delivery queue -- events are handed off to it
+            // rather than written straight to that client's socket from this (upstream) thread.
+            // See GateClientQueue's comment. NULL only if rsrv somehow never started an event
+            // context for the client, in which case delivery falls back to the old direct call.
+            GateClientQueue* queue;
         };
         std::vector<UserSub*> userSubs;
         // Guards both lastData and userSubs together (not two separate mutexes): ca_event_cb()
@@ -151,6 +160,26 @@ static std::map<std::string, std::shared_ptr<GateChannel>> channels;
 static std::mutex channelsMutex;
 static std::map<std::string, std::shared_ptr<GateClient>> clients;
 
+// Hands one event for `owner` to its client's queue -- or, if that client somehow has no event
+// context, falls back to delivering inline (the pre-queue behavior). `data` may be null for a
+// statistics-PV update, whose value is recomputed at delivery time.
+static void gate_deliver(GateClientQueue* queue, const void* owner,
+                          void (*cb)(void*, void*, int, void*), void* user_arg, void* dbchan,
+                          const std::shared_ptr<GateData>& data) {
+    if (!queue) {
+        cb(user_arg, dbchan, 0, data ? (void*)data.get() : NULL);
+        return;
+    }
+    GateClientQueue::Entry e;
+    e.data = data;
+    e.cb = cb;
+    e.user_arg = user_arg;
+    e.dbchan = dbchan;
+    e.owner = owner;
+    e.bytes = data ? data->data.size() : 0;
+    gate_queue_push(queue, std::move(e));
+}
+
 // --- Gateway statistics PVs (gateInitStats), comparable to the old PCAS-based Gateway's
 // STAT_PVS (vctotal/pvtotal/connected/active/inactive; see CLAUDE.md) and RATE_STATS
 // (clientEventRate/clientPostRate, here split into an upstream/downstream pair each for
@@ -175,6 +204,7 @@ struct GateStatEntry {
         void* user_arg;
         void* dbchan;
         GateStatEntry* owner;
+        GateClientQueue* queue; // subscribing client's delivery queue, as for MaskSub::UserSub
     };
     std::vector<Sub*> subs;
     std::mutex mtx;
@@ -310,7 +340,8 @@ static void notify_stats_changed() {
             std::lock_guard<std::mutex> lock(e->mtx);
             subsCopy = e->subs;
         }
-        for (auto* sub : subsCopy) sub->cb(sub->user_arg, sub->dbchan, 0, NULL);
+        for (auto* sub : subsCopy)
+            gate_deliver(sub->queue, sub, sub->cb, sub->user_arg, sub->dbchan, nullptr);
     }
 }
 
@@ -729,9 +760,10 @@ static void ca_meta_cb(struct event_handler_args args) {
             // counted as received -- only count it as a downstream post here, once per
             // subscriber it actually reaches.
             g_downstreamRate.record(sz);
-            // See ca_event_cb()'s comment: pass ctx->data itself as the "db_field_log" argument
-            // so gate_get_count() serves this specific (deferred) event's own data.
-            usub->cb(usub->user_arg, usub->dbchan, 0, (void*)ctx->data.get());
+            // See ca_event_cb()'s comment: hand ctx->data itself over as the "db_field_log"
+            // argument so gate_get_count() serves this specific (deferred) event's own data.
+            // The queue holds a shared_ptr to it, keeping it alive until actually delivered.
+            gate_deliver(usub->queue, usub, usub->cb, usub->user_arg, usub->dbchan, ctx->data);
         }
     }
 }
@@ -780,8 +812,10 @@ static void ca_event_cb(struct event_handler_args args) {
                 // transition with no accompanying value change) never touches the default
                 // DBE_VALUE|DBE_PROPERTY subscription's own cache at all, so falling back to it
                 // silently re-delivers stale status/severity for every mask other than the
-                // default one.
-                usub->cb(usub->user_arg, usub->dbchan, 0, (void*)newData.get());
+                // default one. Handing it to the client's own queue (rather than calling
+                // read_reply() straight from this upstream thread) is what keeps one slow
+                // client from stalling this whole upstream circuit -- see GateClientQueue.
+                gate_deliver(usub->queue, usub, usub->cb, usub->user_arg, usub->dbchan, newData);
             }
         }
     }
@@ -856,6 +890,7 @@ void gate_init(void) {
     if (!ca_current_context()) ca_context_create(ca_enable_preemptive_callback);
     g_ca_ctx = ca_current_context();
 }
+
 
 struct RouteMatch {
     bool has_allow = false;
@@ -1133,10 +1168,12 @@ void gate_put_notify(void* channel, int src_type, const void* psrc, long no_elem
     ca_flush_io();
 }
 
-void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, void* real_dbchan, unsigned int select) {
+void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, void* real_dbchan,
+                      unsigned int select, void* queue) {
+    GateClientQueue* q = (GateClientQueue*)queue;
     if (is_stat_handle(channel)) {
         GateStatEntry* stat = (GateStatEntry*)channel;
-        auto* sub = new GateStatEntry::Sub{(void (*)(void*, void*, int, void*))cb, user_arg, real_dbchan, stat};
+        auto* sub = new GateStatEntry::Sub{(void (*)(void*, void*, int, void*))cb, user_arg, real_dbchan, stat, q};
         {
             std::lock_guard<std::mutex> lock(statHandlesMutex);
             statSubHandles.insert(sub);
@@ -1147,13 +1184,13 @@ void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, voi
         }
         // Same convention as a real channel's first subscription delivery: every new monitor
         // gets one immediate value, regardless of any other subscriber.
-        sub->cb(sub->user_arg, sub->dbchan, 0, NULL);
+        gate_deliver(sub->queue, sub, sub->cb, sub->user_arg, sub->dbchan, nullptr);
         return (void*)sub;
     }
     ensure_ca_context();
     GateChannel* gchan = (GateChannel*)channel;
     auto msub = get_or_create_mask_sub(gchan, gchan->caChid, select);
-    auto* usub = new GateChannel::MaskSub::UserSub{(void (*)(void*, void*, int, void*))cb, user_arg, real_dbchan, msub.get()};
+    auto* usub = new GateChannel::MaskSub::UserSub{(void (*)(void*, void*, int, void*))cb, user_arg, real_dbchan, msub.get(), q};
     // Every new CA monitor subscription gets one immediate delivery of the channel's current
     // value, regardless of whether other subscribers already exist for the same upstream mask
     // (e.g. this downstream client happens to request the same mask as the eager default
@@ -1176,8 +1213,8 @@ void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, voi
     if (data) {
         // The initial delivery on subscribe is a real downstream post too.
         g_downstreamRate.record(data->data.size());
-        // See ca_event_cb()'s comment: pass data itself as the "db_field_log" argument.
-        usub->cb(usub->user_arg, usub->dbchan, 0, (void*)data.get());
+        // See ca_event_cb()'s comment: hand data itself over as the "db_field_log" argument.
+        gate_deliver(usub->queue, usub, usub->cb, usub->user_arg, usub->dbchan, data);
     }
     return (void*)usub;
 }
@@ -1187,6 +1224,12 @@ void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, voi
 // per-subscription state -- the next upstream event delivered to that channel would then call
 // back into freed memory (usub->cb/usub->user_arg), corrupting the process. Must actually
 // remove and free the entry.
+// Each branch must, in this order: (1) unregister so no *new* event can be queued for this
+// subscription, (2) drop whatever is already sitting in the client's queue for it and wait out
+// any delivery of it currently in progress on the reader thread, and only then (3) free it.
+// Skipping (2) would let the reader dereference a freed UserSub/Sub -- rsrv cancels
+// subscriptions (event_cancel_reply, destroyAllChannels) from the client's own TCP thread,
+// concurrently with that same client's reader thread draining the queue.
 void gate_cancel_event(void* event_id) {
     if (!event_id) return;
     if (is_stat_sub(event_id)) {
@@ -1201,6 +1244,7 @@ void gate_cancel_event(void* event_id) {
             std::lock_guard<std::mutex> lock(statHandlesMutex);
             statSubHandles.erase(sub);
         }
+        if (sub->queue) gate_queue_purge_owner(sub->queue, sub);
         delete sub;
         return;
     }
@@ -1211,6 +1255,7 @@ void gate_cancel_event(void* event_id) {
         auto& v = msub->userSubs;
         v.erase(std::remove(v.begin(), v.end(), usub), v.end());
     }
+    if (usub->queue) gate_queue_purge_owner(usub->queue, usub);
     delete usub;
 }
 
@@ -1288,6 +1333,17 @@ void gate_init_stats_cmd(const char* prefix, const char* as_group) {
         true, "B/s", 1);
     add("downstreamVolumeRate", []{ return g_downstreamRate.byteRate.load(std::memory_order_relaxed); },
         true, "B/s", 1);
+    // Downstream delivery queues (see GateClientQueue): depth/bytes are the live totals summed
+    // over every connected client's queue, dropped is cumulative since startup. A persistently
+    // non-zero depth or a climbing "queueDropped" is the signal that some client can't keep up.
+    add("queueDepth", []{ return (double)g_qDepth.load(std::memory_order_relaxed); });
+    add("queueBytes", []{ return (double)g_qBytes.load(std::memory_order_relaxed); }, false, "B");
+    add("queueMaxDepth", []{ return (double)g_qDepthHigh.load(std::memory_order_relaxed); });
+    add("queueMaxBytes", []{ return (double)g_qBytesHigh.load(std::memory_order_relaxed); }, false, "B");
+    add("queueDropped", []{
+        return (double)(g_qDroppedOldest.load(std::memory_order_relaxed) +
+                        g_qDroppedNewest.load(std::memory_order_relaxed));
+    });
     // Started lazily, once, on the first gateInitStats call -- a gateway that never enables
     // statistics never spins up the background rate-ticking timer thread.
     std::call_once(g_rateStatsTimerOnce, []{
