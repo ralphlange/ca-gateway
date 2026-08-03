@@ -40,12 +40,26 @@ static const iocshFuncDef siDef = GATE_IOCSH_FUNCDEF("gateInitStats", 2, siAs,
     "Create gateway statistics PVs (<prefix>:vctotal/pvtotal/connected/active/inactive); as_group defaults to DEFAULT");
 static void siCall(const iocshArgBuf *a) { gate_init_stats_cmd(a[0].sval, a[1].sval); }
 
+static const iocshArg ptA0 = { "addr", iocshArgString }, ptA1 = { "config", iocshArgInt }, ptA2 = { "timeout", iocshArgDouble };
+static const iocshArg * const ptAs[] = { &ptA0, &ptA1, &ptA2 };
+static const iocshFuncDef ptDef = GATE_IOCSH_FUNCDEF("gateLoadPutLogText", 3, ptAs,
+    "Configure the traditional-format caPutLog network sink (config: -1 none/0 on-change/1 all/2 all-no-filter)");
+static void ptCall(const iocshArgBuf *a) { gate_load_put_log_text_cmd(a[0].sval, a[1].ival, a[2].dval); }
+
+static const iocshArg pjA0 = { "addr", iocshArgString }, pjA1 = { "config", iocshArgInt }, pjA2 = { "timeout", iocshArgDouble };
+static const iocshArg * const pjAs[] = { &pjA0, &pjA1, &pjA2 };
+static const iocshFuncDef pjDef = GATE_IOCSH_FUNCDEF("gateLoadPutLogJson", 3, pjAs,
+    "Configure the JSON-format caPutLog network sink (config: -1 none/0 on-change/1 all/2 all-no-filter)");
+static void pjCall(const iocshArgBuf *a) { gate_load_put_log_json_cmd(a[0].sval, a[1].ival, a[2].dval); }
+
 void gateIocRegister(void) {
     iocshRegister(&clDef, clCall);
     iocshRegister(&pvDef, pvCall);
     iocshRegister(&ldDef, ldCall);
     iocshRegister(&laDef, laCall);
     iocshRegister(&siDef, siCall);
+    iocshRegister(&ptDef, ptCall);
+    iocshRegister(&pjDef, pjCall);
 }
 }
 

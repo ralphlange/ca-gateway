@@ -57,6 +57,17 @@ void gate_init_stats_cmd(const char* prefix, const char* as_group);
 // dbChannelDelete, which pair 1:1 per downstream client channel. Drives the "vctotal"/
 // "active"/"inactive" statistics PVs.
 void gate_channel_claim(void* handle);
+// Recovers the gate_create_channel_for_client()-returned handle from a real struct dbChannel*
+// (asTrapWriteMessage::serverSpecific, see GateLogic.cpp's caPutLog trap-write listener);
+// implemented in gateShim.c, which alone knows the dbChannelGate layout.
+void* gate_handle_from_dbchannel(struct dbChannel* chan);
+// Configures caPutLog network put-logging (see GateLogic.cpp for the full design comment on
+// why this bypasses caPutLogAsInit()/the caPutLog module's own convenience entry points).
+// config: -1 (none/disable) / 0 (on-change) / 1 (log all) / 2 (log all, no same-PV filtering) --
+// same convention as caPutLog.h's caPutLogNone/OnChange/All/AllNoFilter. addr is a
+// whitespace-separated list of "host[:port]" log-server destinations.
+void gate_load_put_log_text_cmd(const char* addr, int config, double timeout);
+void gate_load_put_log_json_cmd(const char* addr, int config, double timeout);
 #ifdef __cplusplus
 }
 #endif

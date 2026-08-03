@@ -266,6 +266,10 @@ def run_gateway(
     gateway_port: int = config.default_gateway_port,
     verbose: bool = config.verbose_gateway,
     stats_prefix: str = "gwtest",
+    put_log_text_addr: Optional[str] = None,
+    put_log_text_config: int = 1,
+    put_log_json_addr: Optional[str] = None,
+    put_log_json_config: int = 1,
 ) -> Generator[subprocess.Popen, None, None]:
     """
     Starts a gateway process with the provided configuration.
@@ -300,6 +304,16 @@ def run_gateway(
     stats_prefix : str, optional
         Prefix for the gateway statistics PVs (``<prefix>:vctotal`` etc, see
         `GatewayStats`), loaded via a `gateInitStats` iocsh command.
+
+    put_log_text_addr, put_log_json_addr : str, optional
+        ``host:port`` (or whitespace-separated list) of caPutLog network log-server
+        destination(s); if given, loaded via `gateLoadPutLogText`/`gateLoadPutLogJson`
+        respectively (requires ``access`` to grant TRAPWRITE on the relevant ASG rule --
+        see ``testTop/pyTestsApp/gateway_tests/test_caputlog_network.py``).
+
+    put_log_text_config, put_log_json_config : int, optional
+        caPutLog config level for the corresponding sink: -1 disable / 0 on-change /
+        1 log-all / 2 log-all-no-filter (1 and 2 are equivalent in this reimplementation).
     """
     pvlist_text = ""
     if pvlist and os.path.exists(pvlist):
@@ -333,6 +347,10 @@ def run_gateway(
             # registered while access security is already active -- see gate_init_stats_cmd()).
             if stats_prefix:
                 startup_commands += f"gateInitStats {stats_prefix}\n"
+            if put_log_text_addr:
+                startup_commands += f"gateLoadPutLogText {put_log_text_addr} {put_log_text_config} 5.0\n"
+            if put_log_json_addr:
+                startup_commands += f"gateLoadPutLogJson {put_log_json_addr} {put_log_json_config} 5.0\n"
             startup_commands += f"gateLoadConfig {config_fp.name}\n"
             proc.stdin.write(startup_commands.encode())
             proc.stdin.flush()
@@ -692,6 +710,22 @@ def prop_supported() -> bool:
         future = exec.submit(get_prop_support)
 
     return future.result()
+
+
+@pytest.fixture(scope="session")
+def caputlog_supported() -> bool:
+    """
+    Was the gateway under test built with caPutLog support?
+
+    caPutLog support (gateLoadPutLogText/gateLoadPutLogJson) is only compiled in when CAPUTLOG
+    is set in RELEASE.local at build time (see src/Makefile's WITH_CAPUTLOG). Without it, both
+    iocsh commands are still registered but are stubs that just log that the feature isn't
+    built in (see GateLogic.cpp) -- that stub's own log message is a unique string in the
+    compiled binary, checked here directly rather than re-invoking `make` (which may not even
+    apply to a gateway binary installed/tested from somewhere other than this source tree).
+    """
+    with open(config.gateway_executable, "rb") as fp:
+        return b"caPutLog support not built in" not in fp.read()
 
 
 def find_differences(

@@ -111,6 +111,18 @@ void dbChannelDelete(struct dbChannel *chan) {
 
 void dbChannelShow(dbChannel *chan, int level, unsigned short indent) {}
 
+/*
+ * Recovers the gate_create_channel_for_client()-returned handle from a real struct dbChannel*
+ * -- used by GateLogic.cpp's asTrapWriteListener (caPutLog integration) to map
+ * asTrapWriteMessage::serverSpecific (which rsrv's write_action()/write_notify_action() set to
+ * pciu->dbch, i.e. exactly this dbChannelGate's embedded .chan) back to the GateChannel it
+ * belongs to. GateLogic.cpp has no visibility into struct dbChannelGate's layout.
+ */
+void* gate_handle_from_dbchannel(struct dbChannel *chan) {
+    struct dbChannelGate *gchan = (struct dbChannelGate *)((char*)chan - offsetof(struct dbChannelGate, chan));
+    return gchan->gateHandle;
+}
+
 int dbChannel_get_count(struct dbChannel *chan, int buffer_type, void *pbuffer, long *nRequest, void *pfl) {
     struct dbChannelGate *gchan = (struct dbChannelGate *)((char*)chan - offsetof(struct dbChannelGate, chan));
     return gate_get_count(gchan->gateHandle, buffer_type, pbuffer, nRequest, pfl);
