@@ -602,8 +602,12 @@ struct PutLogEntry {
 // once after (after==1, once pmessage->data/dbrType/no_elements -- the "new" value -- are valid
 // and the write has actually been forwarded upstream).
 static void gate_trap_write_cb(asTrapWriteMessage* pmessage, int after) {
-    if (!pmessage->serverSpecific) return;
-    void* handle = gate_handle_from_dbchannel(pmessage->serverSpecific);
+    // asTrapWriteMessage::serverSpecific is a plain `void*` on Base 3.15 and a
+    // `struct dbChannel*` on 7.0, so it has to be cast explicitly to compile on both (rsrv
+    // sets it to pciu->dbch either way -- see write_action()/write_notify_action()).
+    struct dbChannel* dbch = (struct dbChannel*)pmessage->serverSpecific;
+    if (!dbch) return;
+    void* handle = gate_handle_from_dbchannel(dbch);
     if (!handle || is_stat_handle(handle)) return; // statistics PVs are read-only, never trapped
     GateChannel* gchan = (GateChannel*)handle;
     int nativeCaType = gate_native_ca_type(gchan);
@@ -617,7 +621,7 @@ static void gate_trap_write_cb(asTrapWriteMessage* pmessage, int after) {
 
         epicsSnprintf(pld->userid, MAX_USERID_SIZE, "%s", pmessage->userid ? pmessage->userid : "");
         epicsSnprintf(pld->hostid, MAX_HOSTID_SIZE, "%s", pmessage->hostid ? pmessage->hostid : "");
-        epicsSnprintf(pld->pv_name, PVNAME_STRINGSZ, "%s", pmessage->serverSpecific->name ? pmessage->serverSpecific->name : "");
+        epicsSnprintf(pld->pv_name, PVNAME_STRINGSZ, "%s", dbch->name ? dbch->name : "");
         pld->type = (short)realDbf;
         // Bracket multi-element values based on the channel's own dimensionality (NELM > 1),
         // not this event's current count, matching the old Gateway's gdd_to_log_string()
@@ -1234,7 +1238,8 @@ void gate_init_stats_cmd(const char* prefix, const char* as_group) {
     auto add = [&](const char* suffix, std::function<double()> getter,
                     bool isDouble = false, const char* units = "", short precision = 0) {
         std::string full = std::string(prefix) + ":" + suffix;
-        auto entry = std::make_unique<GateStatEntry>();
+        // Not std::make_unique: that is C++14, and CI builds this with -std=c++11.
+        std::unique_ptr<GateStatEntry> entry(new GateStatEntry());
         entry->name = full;
         entry->getter = std::move(getter);
         entry->isDouble = isDouble;
