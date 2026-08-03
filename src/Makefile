@@ -15,7 +15,7 @@ gateway_SRCS += cast_server.c online_notify.c
 
 gateway_SRCS += rsrvIocRegister.c
 gateway_SRCS += gateShim.c
-gateway_SRCS += GateMain.cpp GateLogic.cpp GateFormat.cpp
+gateway_SRCS += GateMain.cpp GateLogic.cpp GateFormat.cpp GateQueue.cpp
 
 PROD_LIBS += $(EPICS_BASE_IOC_LIBS)
 

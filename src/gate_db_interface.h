@@ -32,8 +32,23 @@ void dbChannel_put_notify(struct dbChannel* chan, int buffer_type, const void* p
 // db_field_log*) exactly -- `channel` is really a struct dbChannel*, and the last argument is
 // really a GateData* (see GateLogic.cpp's gate_get_count()), not a raw value pointer.
 typedef void (gate_event_callback)(void* user_arg, void* channel, int eventsRemaining, void* pfl);
-void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, void* real_dbchan, unsigned int select);
+// `queue` is the subscribing downstream client's delivery queue (gate_queue_create(), below):
+// events are handed to it rather than written to that client's socket from the upstream
+// thread. NULL falls back to inline delivery.
+void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, void* real_dbchan,
+                      unsigned int select, void* queue);
 void gate_cancel_event(void* event_id);
+// --- Per-downstream-client delivery queue, one per rsrv client event context (client->evuser).
+// Decouples upstream CA callbacks from blocking writes to one client's socket, so a client that
+// stops draining can't stall its whole upstream circuit -- see GateLogic.cpp's GateClientQueue.
+void* gate_queue_create(void);
+void gate_queue_start(void* queue, const char* name, unsigned int priority);
+void gate_queue_destroy(void* queue);
+// CA_PROTO_EVENTS_OFF/ON: pause/resume delivery (events keep queueing meanwhile).
+void gate_queue_set_flow_ctrl(void* queue, int on);
+// Queue bounds/overflow policy ("oldest"|"newest") and reporting; see GateLogic.cpp.
+void gate_set_queue_limits_cmd(int maxElements, int maxBytes, const char* policy);
+void gate_queue_report_cmd(int level);
 void gate_create_client_cmd(const char* name, const char* addr_list, int auto_addr, int port);
 void gate_add_pv_cmd(const char* pattern, const char* client_name, const char* as_group, const char* target);
 // Adds a DENY route: hosts_csv empty = blanket deny (hidden from every client); otherwise a
