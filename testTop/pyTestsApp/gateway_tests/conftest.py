@@ -270,6 +270,7 @@ def run_gateway(
     put_log_text_config: int = 1,
     put_log_json_addr: Optional[str] = None,
     put_log_json_config: int = 1,
+    put_log_file: Optional[str] = None,
 ) -> Generator[subprocess.Popen, None, None]:
     """
     Starts a gateway process with the provided configuration.
@@ -314,6 +315,12 @@ def run_gateway(
     put_log_text_config, put_log_json_config : int, optional
         caPutLog config level for the corresponding sink: -1 disable / 0 on-change /
         1 log-all / 2 log-all-no-filter (1 and 2 are equivalent in this reimplementation).
+
+    put_log_file : str, optional
+        Path for a local put-log file (drop-in replacement for the old Gateway's own
+        "-putlog <file>"); if given, loaded via `gateLoadPutLogFile`. Always logs every
+        trapped write (no config level -- the old file writer had none, unlike the network
+        sinks above).
     """
     pvlist_text = ""
     if pvlist and os.path.exists(pvlist):
@@ -351,6 +358,8 @@ def run_gateway(
                 startup_commands += f"gateLoadPutLogText {put_log_text_addr} {put_log_text_config} 5.0\n"
             if put_log_json_addr:
                 startup_commands += f"gateLoadPutLogJson {put_log_json_addr} {put_log_json_config} 5.0\n"
+            if put_log_file:
+                startup_commands += f"gateLoadPutLogFile {put_log_file}\n"
             startup_commands += f"gateLoadConfig {config_fp.name}\n"
             proc.stdin.write(startup_commands.encode())
             proc.stdin.flush()
@@ -515,6 +524,7 @@ def custom_environment(
     encoding: str = "latin-1",
     ioc_args: Optional[List[str]] = None,
     gateway_args: Optional[List[str]] = None,
+    put_log_file: Optional[str] = None,
 ) -> Generator[EnvironmentInfo, None, None]:
     """
     Run a gateway and an IOC in a custom environment, specifying the raw
@@ -538,6 +548,9 @@ def custom_environment(
     dbd_file : str, optional
         Path to the IOC database definition.  Defaults to using the database
         definition provided with epics-base/softIoc.
+
+    put_log_file : str, optional
+        Forwarded to `run_gateway`'s ``put_log_file`` -- see there.
     """
     gateway_args = gateway_args or []
     ioc_args = ioc_args or []
@@ -574,7 +587,7 @@ def custom_environment(
         )
         del gateway_args  # the rsrv-based Gateway has no CLI args to forward
         with (
-            run_gateway(access=access_fp.name, pvlist=pvlist_fp.name),
+            run_gateway(access=access_fp.name, pvlist=pvlist_fp.name, put_log_file=put_log_file),
             run_ioc(*ioc_args, db_file=dbfile_fp.name, dbd_file=dbd_file),
             local_channel_access(),
         ):
