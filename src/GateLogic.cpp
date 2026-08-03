@@ -16,7 +16,20 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+#include <cstdio>
 #include <epicsTimer.h>
+#include <epicsStdio.h>
+// caPutLog support (gateLoadPutLogText/gateLoadPutLogJson) is only compiled in when CAPUTLOG
+// is set in RELEASE.local -- see src/Makefile, which turns that into -DWITH_CAPUTLOG. Without
+// it, gate_load_put_log_text_cmd()/gate_load_put_log_json_cmd() (below, outside this #ifdef)
+// still exist -- so the iocsh commands are always registered -- but just report the feature
+// isn't built in, rather than the gateway failing to build at all.
+#ifdef WITH_CAPUTLOG
+#include <asTrapWrite.h>
+#include <caPutLog.h>
+#include <caPutLogTask.h>
+#include <logClient.h>
+#endif
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
 #include <yajl_parse.h>
@@ -300,6 +313,309 @@ static void notify_stats_changed() {
         for (auto* sub : subsCopy) sub->cb(sub->user_arg, sub->dbchan, 0, NULL);
     }
 }
+
+// --- caPutLog integration (gateLoadPutLogText / gateLoadPutLogJson) ---
+//
+// This whole section (through gate_trap_write_cb() below) only exists when built with
+// WITH_CAPUTLOG (see the #include block near the top of this file, and src/Makefile).
+#ifdef WITH_CAPUTLOG
+//
+// caPutLog (CAPUTLOG in RELEASE.local) is the real EPICS put-logging module. Its normal entry
+// points -- caPutLogInit() (traditional text), caPutJsonLogInit()/CaPutJsonLogTask::initialize()
+// (JSON) -- all internally call caPutLogAsInit(), which registers *its own*
+// asTrapWriteListener (caPutLogAs(), in caPutLogAs.c) that builds a LOGDATA via dbGetField()
+// against the trapped channel's real dbAddr/rset. That crashes here: gateShim.c's dbGetRset()
+// always returns NULL (there is no real database/records behind a GateChannel), and
+// caPutLogAs.c's caPutLogActualArraySize() dereferences it unconditionally for any array PV.
+//
+// This also rules out caPutLogTaskStart()/caPutLogTaskSend() (the real burst-coalescing
+// background sender) and caPutLogDataCalloc()/caPutLogDataFree(), even though none of those
+// three touch dbAccess themselves: they all operate on a single process-wide free list
+// (logDataFreeList, a `static` in caPutLogAs.c) that is *only* initialized inside
+// caPutLogAsInit() -- there is no other exported entry point that sets it up. Calling
+// caPutLogDataCalloc()/caPutLogTaskSend() without first calling caPutLogAsInit() crashes
+// immediately (freeListCalloc() against an uninitialized/NULL free-list pointer -- confirmed
+// with gdb: SIGSEGV in freeListCalloc(), called from gate_trap_write_cb()'s first put).
+//
+// So neither sink can lean on any of caPutLog's runtime code paths -- only its plain data
+// definitions (LOGDATA/VALUE, caPutLogTask.h) and config enum (caPutLog.h) are used here. Both
+// sinks are our own formatter (text matching the old Gateway/caPutLogTask.c wire format,
+// json matching caPutJsonLogTask.h's documented message schema) sent over the real transport
+// Base itself provides (logClientCreate()/logClientSend(), <logClient.h> -- the same transport
+// caPutLogClientSend() uses internally). Neither sink has real burst-coalescing (that needs
+// caPutLogTask.c's own background thread, which needs the free list); "log all" and
+// "log all, no filter" are therefore equivalent here -- both just mean "no on-change filter".
+//
+// We register our own asTrapWriteListener (gate_trap_write_cb below) and build the LOGDATA
+// ourselves from data we already have -- the channel's own cached upstream value (for "old")
+// and the asTrapWriteMessage's own dbrType/no_elements/data (for "new" -- exactly the client's
+// put payload, already host-byte-order, since write_action()/write_notify_action() in
+// camessage.c call asTrapWriteWithData() right after caNetConvert()).
+
+static asTrapWriteId g_trapWriteListenerId = NULL;
+static std::once_flag g_trapWriteListenerOnce;
+
+struct PutLogSink {
+    std::vector<std::pair<logClientId, std::string>> clients; // id, address (address for dedup)
+    std::mutex mutex;
+    std::atomic<int> config{caPutLogNone}; // caPutLogNone/OnChange/All/AllNoFilter
+};
+static PutLogSink g_textSink;
+static PutLogSink g_jsonSink;
+
+// Same 12-entry table as caPutLogAs.c's caPutLogMaxArraySize() (indexed by a *real*
+// dbFldTypes.h value) -- reimplemented locally rather than calling that function, so this
+// file's caPutLog usage is visibly limited to plain data/config definitions, never runtime
+// code with the free-list dependency described above.
+static long gate_putlog_max_array_size(short realDbf) {
+    static const long table[] = {
+        MAX_ARRAY_SIZE_BYTES / MAX_STRING_SIZE,     /* STRING */
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsInt8),   /* CHAR */
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsUInt8),  /* UCHAR */
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsInt16),  /* SHORT */
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsUInt16), /* USHORT */
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsInt32),  /* LONG */
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsUInt32), /* ULONG */
+#ifdef DBR_INT64
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsInt64),  /* INT64 */
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsUInt64), /* UINT64 */
+#endif
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsFloat32),/* FLOAT */
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsFloat64),/* DOUBLE */
+        MAX_ARRAY_SIZE_BYTES / sizeof(epicsUInt16)  /* ENUM */
+    };
+    long count = sizeof(table) / sizeof(table[0]);
+    if (realDbf < 0 || realDbf >= count) return 1;
+    return table[realDbf];
+}
+
+// Converts `count` elements of `srcCanonical`-typed raw data (portable G_S_DBF_* numbering,
+// e.g. from gate_dbr_to_dbf()) into `dst`, typed `dstRealDbf` (a *real*, per-version
+// dbFldTypes.h value -- see gate_compat.h) -- reusing Base's own dbGetConvertRoutine table,
+// exactly as GateFormat.cpp's gate_format_response() does for downstream responses. Returns
+// the number of elements actually converted (capped at dstMaxElems).
+static long gate_convert_for_putlog(int srcCanonical, const void* srcRaw, long count,
+                                     int dstRealDbf, void* dst, long dstMaxElems) {
+    long available = count > 0 ? count : 1;
+    long n = available > dstMaxElems ? dstMaxElems : available;
+    GETCONVERTFUNC convert = dbGetConvertRoutine[gate_dbf_to_real_dbf(srcCanonical)][dstRealDbf];
+    if (!convert) return 0;
+    struct dbAddr addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.field_type = (short)gate_dbf_to_real_dbf(srcCanonical);
+    addr.pfield = (void*)srcRaw;
+    addr.no_elements = available;
+    convert(&addr, dst, n, available, 0);
+    return n;
+}
+
+// Byte-for-byte equality of the first `count` elements of two same-typed VALUEs -- used for
+// the "on change" filter (caPutLogOnChange). The real caPutLogTask.c has its own per-type
+// val_equal(), but it's a private `static` function, not an exported symbol.
+static bool gate_putlog_values_equal(const VALUE& a, const VALUE& b, int canonical, long count) {
+    long n = count > 0 ? count : 1;
+    switch (canonical) {
+        case G_S_DBF_STRING: return strncmp(a.v_string, b.v_string, sizeof(a.v_string)) == 0;
+        case G_S_DBF_CHAR:   return memcmp(a.a_int8, b.a_int8, n * sizeof(epicsInt8)) == 0;
+        case G_S_DBF_SHORT:  return memcmp(a.a_int16, b.a_int16, n * sizeof(epicsInt16)) == 0;
+        case G_S_DBF_LONG:   return memcmp(a.a_int32, b.a_int32, n * sizeof(epicsInt32)) == 0;
+        case G_S_DBF_FLOAT:  return memcmp(a.a_float, b.a_float, n * sizeof(epicsFloat32)) == 0;
+        case G_S_DBF_DOUBLE: return memcmp(a.a_double, b.a_double, n * sizeof(epicsFloat64)) == 0;
+        case G_S_DBF_ENUM:   return memcmp(a.a_uint16, b.a_uint16, n * sizeof(epicsUInt16)) == 0;
+        default: return false;
+    }
+}
+
+// Traditional text value rendering, matching caPutLogTask.c's val_to_string() exactly (same
+// field widths/format specifiers) for wire compatibility with real caPutLog log-server tooling.
+static void gate_text_append_value(std::string& out, const VALUE& v, int canonical) {
+    char buf[64];
+    switch (canonical) {
+        case G_S_DBF_STRING:
+            out += '"';
+            out += v.v_string;
+            out += '"';
+            break;
+        case G_S_DBF_CHAR:
+            snprintf(buf, sizeof(buf), "%d", (int)v.v_int8); out += buf; break;
+        case G_S_DBF_SHORT:
+            snprintf(buf, sizeof(buf), "%d", (int)v.v_int16); out += buf; break;
+        case G_S_DBF_LONG:
+            snprintf(buf, sizeof(buf), "%ld", (long)v.v_int32); out += buf; break;
+        case G_S_DBF_FLOAT:
+            snprintf(buf, sizeof(buf), "%g", v.v_float); out += buf; break;
+        case G_S_DBF_DOUBLE:
+            snprintf(buf, sizeof(buf), "%g", v.v_double); out += buf; break;
+        case G_S_DBF_ENUM:
+            snprintf(buf, sizeof(buf), "%u", (unsigned)v.v_uint16); out += buf; break;
+        default:
+            break;
+    }
+}
+
+// JSON value rendering, matching caPutJsonLogTask.h's documented message schema (a
+// self-contained reimplementation -- see the architecture comment above for why
+// CaPutJsonLogTask itself can't be reused).
+static void gate_json_append_value(std::string& out, const VALUE& v, int canonical) {
+    char buf[64];
+    switch (canonical) {
+        case G_S_DBF_STRING:
+            out += '"';
+            for (size_t i = 0; i < sizeof(v.v_string) && v.v_string[i]; ++i) {
+                char c = v.v_string[i];
+                if (c == '"' || c == '\\') out += '\\';
+                out += c;
+            }
+            out += '"';
+            break;
+        case G_S_DBF_CHAR:
+            snprintf(buf, sizeof(buf), "%d", (int)v.v_int8); out += buf; break;
+        case G_S_DBF_SHORT:
+            snprintf(buf, sizeof(buf), "%d", (int)v.v_int16); out += buf; break;
+        case G_S_DBF_LONG:
+            snprintf(buf, sizeof(buf), "%ld", (long)v.v_int32); out += buf; break;
+        case G_S_DBF_FLOAT:
+            snprintf(buf, sizeof(buf), "%g", v.v_float); out += buf; break;
+        case G_S_DBF_DOUBLE:
+            snprintf(buf, sizeof(buf), "%g", v.v_double); out += buf; break;
+        case G_S_DBF_ENUM:
+            snprintf(buf, sizeof(buf), "%u", (unsigned)v.v_uint16); out += buf; break;
+        default:
+            out += "null";
+            break;
+    }
+}
+
+// Formats `pld` (traditional or JSON, depending on `sink`) and sends it to every configured
+// destination of that sink. `canonical` is the portable G_S_DBF_* type both
+// old_value/new_value.value are stored as.
+static void gate_send_put_log(PutLogSink& sink, bool json, const LOGDATA& pld, int canonical) {
+    std::string msg;
+    if (json) {
+        char datebuf[16], timebuf[16];
+        epicsTimeToStrftime(datebuf, sizeof(datebuf), "%d-%m-%Y", &pld.new_value.time);
+        epicsTimeToStrftime(timebuf, sizeof(timebuf), "%H:%M:%S", &pld.new_value.time);
+        msg = "{\"date\":\"";
+        msg += datebuf;
+        msg += "\",\"time\":\"";
+        msg += timebuf;
+        msg += "\",\"host\":\"";
+        msg += pld.hostid;
+        msg += "\",\"user\":\"";
+        msg += pld.userid;
+        msg += "\",\"pv\":\"";
+        msg += pld.pv_name;
+        msg += "\",\"new\":";
+        gate_json_append_value(msg, pld.new_value.value, canonical);
+        msg += ",\"old\":";
+        gate_json_append_value(msg, pld.old_value, canonical);
+        msg += "}\n";
+    } else {
+        // "<time> <hostid> <userid> <pv_name> new=<value> old=<value>", matching
+        // caPutLogTask.c's log_msg()/do_log() field order exactly.
+        char timebuf[64];
+        epicsTimeToStrftime(timebuf, sizeof(timebuf), "%d-%b-%y %H:%M:%S", &pld.new_value.time);
+        msg = timebuf;
+        msg += ' ';
+        msg += pld.hostid;
+        msg += ' ';
+        msg += pld.userid;
+        msg += ' ';
+        msg += pld.pv_name;
+        msg += " new=";
+        gate_text_append_value(msg, pld.new_value.value, canonical);
+        msg += " old=";
+        gate_text_append_value(msg, pld.old_value, canonical);
+        msg += "\n";
+    }
+
+    std::lock_guard<std::mutex> lock(sink.mutex);
+    for (auto& c : sink.clients) {
+        // logClientSend() alone only batches (periodic flush every 5s, or on cache overflow,
+        // per its own doc comment) -- flush immediately so a put-log entry isn't lost to that
+        // delay if the gateway happens to restart shortly after.
+        logClientSend(c.first, msg.c_str());
+        logClientFlush(c.first);
+    }
+}
+
+// The asTrapWriteListener registered once (lazily) by gateLoadPutLogText/gateLoadPutLogJson.
+// Called twice per trapped write (real, unmodified asLib/rsrv machinery -- see the
+// architecture comment above): once before (after==0, to snapshot the "old" value) and once
+// after (after==1, once pmessage->data/dbrType/no_elements -- the "new" value -- are valid and
+// the write has actually been forwarded upstream).
+static void gate_trap_write_cb(asTrapWriteMessage* pmessage, int after) {
+    if (!pmessage->serverSpecific) return;
+    void* handle = gate_handle_from_dbchannel(pmessage->serverSpecific);
+    if (!handle || is_stat_handle(handle)) return; // statistics PVs are read-only, never trapped
+    GateChannel* gchan = (GateChannel*)handle;
+    int nativeCaType = gate_native_ca_type(gchan);
+    int canonical = gate_dbr_to_dbf(nativeCaType >= 0 ? nativeCaType : DBR_DOUBLE);
+    int realDbf = gate_dbf_to_real_dbf(canonical);
+
+    if (!after) {
+        LOGDATA* pld = new LOGDATA();
+        pmessage->userPvt = pld;
+
+        epicsSnprintf(pld->userid, MAX_USERID_SIZE, "%s", pmessage->userid ? pmessage->userid : "");
+        epicsSnprintf(pld->hostid, MAX_HOSTID_SIZE, "%s", pmessage->hostid ? pmessage->hostid : "");
+        epicsSnprintf(pld->pv_name, PVNAME_STRINGSZ, "%s", pmessage->serverSpecific->name ? pmessage->serverSpecific->name : "");
+        pld->type = (short)realDbf;
+
+        long maxElems = gate_putlog_max_array_size(pld->type);
+        long oldCount = 0;
+        // Best-effort "old" value: our own cached copy of the channel's most recent upstream
+        // value -- there is no real record behind a GateChannel to read a pre-put snapshot
+        // from, unlike caPutLogAs.c's dbGetField() (see architecture comment above).
+        std::shared_ptr<GateChannel::MaskSub> msub;
+        {
+            std::lock_guard<std::mutex> lock(gchan->maskMutex);
+            auto it = gchan->maskSubs.find(GATE_DEFAULT_MASK);
+            if (it != gchan->maskSubs.end()) msub = it->second;
+        }
+        std::shared_ptr<GateData> data;
+        if (msub) {
+            std::lock_guard<std::mutex> lock(msub->mtx);
+            data = msub->lastData;
+        }
+        if (data) {
+            int srcCanonical = gate_dbr_to_dbf(data->dbrType);
+            const void* rawValue = (const void*)((const char*)data->data.data() + dbr_size[data->dbrType] - dbr_value_size[data->dbrType]);
+            oldCount = gate_convert_for_putlog(srcCanonical, rawValue, data->count, pld->type, &pld->old_value, maxElems);
+        }
+        pld->old_size = pld->old_log_size = (int)oldCount;
+        pld->is_array = oldCount > 1;
+        return;
+    }
+
+    std::unique_ptr<LOGDATA> pld((LOGDATA*)pmessage->userPvt);
+    if (!pld) return;
+
+    int textConfig = g_textSink.config.load(std::memory_order_relaxed);
+    int jsonConfig = g_jsonSink.config.load(std::memory_order_relaxed);
+    bool wantText = textConfig != caPutLogNone;
+    bool wantJson = jsonConfig != caPutLogNone;
+    if (!wantText && !wantJson) return;
+
+    long maxElems = gate_putlog_max_array_size(pld->type);
+    // The put's own wire type (mp->m_dataType, forwarded verbatim into the trap message) --
+    // not necessarily the channel's native type, e.g. a client may PUT a DBR_STRING to a
+    // DBR_DOUBLE channel. Always converted into pld->type (the channel's native type) so
+    // old_value and new_value.value share one consistent representation.
+    int newSrcCanonical = gate_dbr_to_dbf(pmessage->dbrType);
+    long newCount = gate_convert_for_putlog(newSrcCanonical, pmessage->data, pmessage->no_elements,
+                                             pld->type, &pld->new_value.value, maxElems);
+    pld->new_size = pld->new_log_size = (int)newCount;
+    pld->is_array = pld->is_array || newCount > 1;
+    epicsTimeGetCurrent(&pld->new_value.time);
+
+    bool unchanged = gate_putlog_values_equal(pld->old_value, pld->new_value.value, canonical, newCount);
+    if (wantText && !(textConfig == caPutLogOnChange && unchanged))
+        gate_send_put_log(g_textSink, false, *pld, canonical);
+    if (wantJson && !(jsonConfig == caPutLogOnChange && unchanged))
+        gate_send_put_log(g_jsonSink, true, *pld, canonical);
+}
+#endif // WITH_CAPUTLOG
 
 struct Route {
     pcre2_code* re;
@@ -1132,4 +1448,75 @@ void gate_load_config(const char* filename) {
     }
     yajl_free(hand);
 }
+
+#ifdef WITH_CAPUTLOG
+// Shared implementation for gateLoadPutLogText/gateLoadPutLogJson (see the architecture
+// comment above gate_trap_write_cb() for why neither sink can use any of caPutLog's own
+// runtime code). addr: whitespace-separated "host[:port]" list of log-server destinations
+// (default port 7011, matching both caPutLogClient.c's and CaPutJsonLogTask::default_port's
+// own default). config: -1 disable / 0 on-change / 1 log-all / 2 log-all-no-filter
+// (caPutLogNone/OnChange/All/AllNoFilter; 1 and 2 are equivalent here -- see above).
+static void gate_load_put_log_cmd(const char* label, PutLogSink& sink, const char* addr, int config) {
+    if (!addr || !addr[0]) {
+        errlogPrintf("%s: no address given\n", label);
+        return;
+    }
+    std::istringstream iss(addr);
+    std::string token;
+    int added = 0;
+    {
+        std::lock_guard<std::mutex> lock(sink.mutex);
+        while (iss >> token) {
+            struct sockaddr_in saddr;
+            if (aToIPAddr(token.c_str(), 7011, &saddr) < 0) {
+                errlogPrintf("%s: bad address '%s'\n", label, token.c_str());
+                continue;
+            }
+            bool dup = false;
+            for (auto& c : sink.clients) if (c.second == token) { dup = true; break; }
+            if (dup) continue;
+            logClientId id = logClientCreate(saddr.sin_addr, ntohs(saddr.sin_port));
+            if (!id) {
+                errlogPrintf("%s: logClientCreate('%s') failed\n", label, token.c_str());
+                continue;
+            }
+            sink.clients.push_back({id, token});
+            added++;
+        }
+        if (!added && sink.clients.empty()) {
+            errlogPrintf("%s: no valid addresses configured\n", label);
+            return;
+        }
+    }
+    sink.config = (config >= caPutLogNone && config <= caPutLogAllNoFilter) ? config : caPutLogAll;
+    std::call_once(g_trapWriteListenerOnce, []{
+        g_trapWriteListenerId = asTrapWriteRegisterListener(gate_trap_write_cb);
+    });
+    errlogPrintf("%s: configured (addr='%s', config=%d)\n", label, addr, config);
+}
+
+void gate_load_put_log_text_cmd(const char* addr, int config, double timeout) {
+    (void)timeout; // no burst coalescing (see architecture comment above)
+    gate_load_put_log_cmd("gate_load_put_log_text_cmd", g_textSink, addr, config);
+}
+
+void gate_load_put_log_json_cmd(const char* addr, int config, double timeout) {
+    (void)timeout;
+    gate_load_put_log_cmd("gate_load_put_log_json_cmd", g_jsonSink, addr, config);
+}
+#else // !WITH_CAPUTLOG
+// gateLoadPutLogText/gateLoadPutLogJson are still registered as iocsh commands (GateMain.cpp)
+// regardless of how this was built, so a config script calling them doesn't hit an "unknown
+// command" error either way -- it just gets a clear explanation instead of the feature
+// silently doing nothing.
+void gate_load_put_log_text_cmd(const char* addr, int config, double timeout) {
+    (void)addr; (void)config; (void)timeout;
+    errlogPrintf("gate_load_put_log_text_cmd: caPutLog support not built in -- set CAPUTLOG in RELEASE.local and rebuild\n");
+}
+
+void gate_load_put_log_json_cmd(const char* addr, int config, double timeout) {
+    (void)addr; (void)config; (void)timeout;
+    errlogPrintf("gate_load_put_log_json_cmd: caPutLog support not built in -- set CAPUTLOG in RELEASE.local and rebuild\n");
+}
+#endif // WITH_CAPUTLOG
 }
