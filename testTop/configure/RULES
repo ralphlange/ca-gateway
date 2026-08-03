@@ -5,4 +5,9 @@ include $(CONFIG)/RULES
 # Library should be rebuilt because LIBOBJS may have changed.
 $(LIBNAME): ../Makefile
 
-TAPFILES += $(TESTSCRIPTS:.py=.tap)
+# Only .py test scripts need their .tap adding here. Filter rather than substituting over the
+# whole list: ":.py=.tap" leaves any non-.py entry unchanged, so a .t script (whose .tap Base
+# already contributes via TAPFILES.t) would otherwise be added to TAPFILES verbatim -- and
+# "make test-results" cats each TAPFILE as TAP, so a perl .t script lands there as a parse
+# error ("No plan found in TAP output").
+TAPFILES += $(patsubst %.py,%.tap,$(filter %.py,$(TESTSCRIPTS)))
