@@ -52,6 +52,12 @@ static const iocshFuncDef pjDef = GATE_IOCSH_FUNCDEF("gateLoadPutLogJson", 3, pj
     "Configure the JSON-format caPutLog network sink (config: -1 none/0 on-change/1 all/2 all-no-filter)");
 static void pjCall(const iocshArgBuf *a) { gate_load_put_log_json_cmd(a[0].sval, a[1].ival, a[2].dval); }
 
+static const iocshArg pfA0 = { "filename", iocshArgString };
+static const iocshArg * const pfAs[] = { &pfA0 };
+static const iocshFuncDef pfDef = GATE_IOCSH_FUNCDEF("gateLoadPutLogFile", 1, pfAs,
+    "Configure a local put-log file (drop-in replacement for the old Gateway's -putlog <file>)");
+static void pfCall(const iocshArgBuf *a) { gate_load_put_log_file_cmd(a[0].sval); }
+
 void gateIocRegister(void) {
     iocshRegister(&clDef, clCall);
     iocshRegister(&pvDef, pvCall);
@@ -60,6 +66,7 @@ void gateIocRegister(void) {
     iocshRegister(&siDef, siCall);
     iocshRegister(&ptDef, ptCall);
     iocshRegister(&pjDef, pjCall);
+    iocshRegister(&pfDef, pfCall);
 }
 }
 

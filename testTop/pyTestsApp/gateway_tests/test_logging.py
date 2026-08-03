@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import datetime
 import logging
 import os
-import socket
 import tempfile
-import threading
-from typing import Any, Generator, List, Optional, Union, Tuple
+from typing import Any, List, Optional, Union
 
 import pytest
 
@@ -16,46 +13,11 @@ from . import conftest
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.skip(
-    reason="caPutLog integration not implemented in the rsrv-based Gateway"
-)
 
-
-@contextlib.contextmanager
-def listen_on_sock(sock: socket.socket, encoding="latin-1") -> Generator[List[str], None, None]:
-    """Listen on TCP socket for caPutLog data."""
-    data = []
-
-    def listen():
-        sock.listen(1)
-        client, addr = sock.accept()
-        try:
-            logger.warning("Accepted client on localhost:%d - %s",
-                           sock.getsockname()[1],
-                           addr)
-            while True:
-                read = client.recv(4096)
-                logger.info("caPutLog TCP server received %s", read)
-                if not data:
-                    break
-                data.append(read.decode(encoding))
-        finally:
-            client.close()
-
-    threading.Thread(target=listen, daemon=True).start()
-    try:
-        yield data
-    finally:
-        sock.close()
-
-
-def create_socket(addr: str) -> Tuple[socket.socket, int]:
-    """Create a TCP socket on the specified address using a system-chosen port."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # Try to avoid "address already in use" between successive caputlog tests
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((addr, 0))
-    return sock, sock.getsockname()[1]
+@pytest.fixture(autouse=True)
+def _require_caputlog(caputlog_supported: bool):
+    if not caputlog_supported:
+        pytest.skip("caPutLog support not built in (CAPUTLOG not set in RELEASE.local)")
 
 
 @dataclasses.dataclass
@@ -161,23 +123,15 @@ def test_caputlog(
     access_contents: str, pvlist_contents: str, pvname: str, values: List[Any]
 ):
     """
-    Test that caPutLog works by putting to a PV and checking the output.
+    Test that the local put-log file (gateLoadPutLogFile, a drop-in replacement for the old
+    Gateway's "-putlog <file>") works by putting to a PV and checking the file's output.
     """
-    sock, putlog_port = create_socket("127.0.0.1")
-    with (
-        tempfile.NamedTemporaryFile() as caputlog_fp,
-        listen_on_sock(sock) as tcp_data,
-    ):
+    with tempfile.NamedTemporaryFile() as caputlog_fp:
         with (
             conftest.custom_environment(
                 access_contents=access_contents,
                 pvlist_contents=pvlist_contents,
-                gateway_args=[
-                    "-putlog",
-                    caputlog_fp.name,
-                    "-caputlog",
-                    f"127.0.0.1:{putlog_port}",
-                ],
+                put_log_file=caputlog_fp.name,
             ) as env,
             conftest.gateway_channel_access_env(),
         ):
@@ -191,8 +145,6 @@ def test_caputlog(
 
     caputlog = CaputLog.from_bytes(caputlog_raw)
 
-    # TCP caputlog doesn't appear functional; leave in for future usage?
-    logger.info("TCP data was:\n%s", tcp_data)
     logger.info("CaputLog:\n%s", caputlog)
     for put, value in zip(caputlog.puts, values):
         assert put.pvname == pvname

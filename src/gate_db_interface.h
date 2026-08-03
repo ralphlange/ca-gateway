@@ -68,6 +68,10 @@ void* gate_handle_from_dbchannel(struct dbChannel* chan);
 // whitespace-separated list of "host[:port]" log-server destinations.
 void gate_load_put_log_text_cmd(const char* addr, int config, double timeout);
 void gate_load_put_log_json_cmd(const char* addr, int config, double timeout);
+// Local put-log file -- a drop-in replacement for the old PCAS-based Gateway's "-putlog
+// <file>" (same line format; see GateLogic.cpp's gate_send_put_log_file() for the exact match).
+// Always logs every trapped write (no config level -- the old file writer had none).
+void gate_load_put_log_file_cmd(const char* filename);
 #ifdef __cplusplus
 }
 #endif
