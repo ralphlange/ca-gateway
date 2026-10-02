@@ -109,11 +109,23 @@ Three layers, bottom to top:
 
 3. **Gateway logic** (`src/GateLogic.cpp` + `src/GateFormat.h`/`.cpp`, declared via
    `src/gate_db_interface.h`, entered from `src/GateMain.cpp`). A C++ engine that:
-   - Owns upstream CA client contexts (`GateClient`, one per configured `client`). Every
-     `gate_*` entry point that can run on an arbitrary `rsrv` server thread (not just the main
-     thread `gate_init()` ran on) calls `ensure_ca_context()` first — CA client contexts are
-     per-thread, so a bare `ca_create_channel()`/`ca_array_put()` from an unattached thread
-     fails silently rather than crashing.
+   - Owns upstream CA client contexts: each `GateClient` (one per configured `client`) has its
+     **own** CA client context, and each `GateChannel` remembers its route's client context
+     (`caCtx`). libca takes a context's configuration only from the environment, so the
+     `GateClient` constructor sets `EPICS_CA_ADDR_LIST`/`EPICS_CA_AUTO_ADDR_LIST`/
+     `EPICS_CA_SERVER_PORT`, creates the context, creates and clears one throwaway channel
+     (the address list is only read when a context creates its first channel, not at
+     `ca_context_create()`), then restores the environment. That fixes each client's
+     configuration for good. Previously all clients shared a single context, and each
+     `gateCreateClient` just overwrote `EPICS_CA_ADDR_LIST`, so the last client's list silently
+     applied to every route. Clients can't be redefined (channels hold their context), and a
+     route naming an unknown client matches nothing.
+     The thread calling into libca can be any rsrv server thread, the iocsh thread, or a libca
+     callback thread of any client's context, and CA contexts are per-thread. So every libca
+     call goes through `CaContextGuard(gchan->caCtx)`, which switches the calling thread to the
+     channel's context and back. Only `ca_create_channel()` and `ca_flush_io()` actually use the
+     *current* context (get/put/subscribe go through the chid's own context), but without the
+     right one they fail silently (never connects, put never sent) or act on the wrong client.
    - Maintains `GateChannel` objects keyed by the **downstream** requested PV name, each an
      upstream `chid` plus per-event-mask subscriptions (`MaskSub`). On upstream connect, a
      default `DBE_VALUE` subscription is created eagerly (not just lazily per downstream
@@ -217,10 +229,10 @@ Three layers, bottom to top:
      (`testTop/pyTestsApp/gateway_tests/conftest.py` has its own, working
      `pvlist_text_to_routes()` translator used by the test harness — see Tests below.)
    - `GateClient` folds the client's `port` into each address in `EPICS_CA_ADDR_LIST`
-     (`"addr:port"`) rather than relying on `EPICS_CA_SERVER_PORT` — that env var is
-     process-wide and also governs the Gateway's own CAS listening port, so if the upstream
-     client just inherited it, and the upstream IOC listens on a different port, the upstream
-     channel would silently search on the wrong port and never connect.
+     (`"addr:port"`), and also sets `EPICS_CA_SERVER_PORT` to it while creating its context
+     (which is what the auto-address-list broadcasts use). The process-wide
+     `EPICS_CA_SERVER_PORT` also governs the Gateway's own CAS listening port, so an upstream
+     client that just inherited it would search on the wrong port and never connect.
 
 `main()` (`GateMain.cpp`) calls `gate_init()`, `rsrvIocRegister()` (registers `rsrv` with the
 shim's `dbRegisterServer`), then drives the registered server's `init()`/`run()`, and finally

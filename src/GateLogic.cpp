@@ -75,16 +75,95 @@ static std::string with_port(const std::string& addr_list, int port) {
     return result;
 }
 
+// Makes `ctx` the calling thread's current CA client context for the guard's lifetime, then
+// restores whatever was current before (possibly none). CA contexts are per-thread, and the
+// gateway calls into libca from whichever thread happens to need it: rsrv's server threads
+// (UDP search, per-client TCP threads), the iocsh thread, and libca's own callback threads of
+// any client's context. Only ca_create_channel() and ca_flush_io() actually use the current
+// context -- get/put/subscribe/clear calls go through the chid's own context -- but those two
+// must always act on the context of the GateClient the channel belongs to: a thread with no
+// context makes them fail silently (upstream channel never connects, put never sent), and a
+// thread with another client's context would create the channel on the wrong network.
+class CaContextGuard {
+public:
+    explicit CaContextGuard(ca_client_context* ctx) : prev(ca_current_context()), switched(prev != ctx) {
+        if (!switched) return;
+        if (prev) ca_detach_context();
+        ca_attach_context(ctx);
+    }
+    ~CaContextGuard() {
+        if (!switched) return;
+        ca_detach_context();
+        if (prev) ca_attach_context(prev);
+    }
+    CaContextGuard(const CaContextGuard&) = delete;
+    CaContextGuard& operator=(const CaContextGuard&) = delete;
+private:
+    ca_client_context* prev;
+    bool switched;
+};
+
+// Sets an environment variable for the guard's lifetime, then restores (or unsets) it.
+class EnvGuard {
+public:
+    EnvGuard(const char* name, const std::string& value) : name(name), had(getenv(name) != NULL) {
+        if (had) old = getenv(name);
+        setenv(name, value.c_str(), 1);
+    }
+    ~EnvGuard() {
+        if (had) setenv(name, old.c_str(), 1);
+        else unsetenv(name);
+    }
+    EnvGuard(const EnvGuard&) = delete;
+    EnvGuard& operator=(const EnvGuard&) = delete;
+private:
+    const char* name;
+    bool had;
+    std::string old;
+};
+
+// One upstream CA client: its own CA client context, configured with its own address list,
+// auto-address-list flag and port. libca only takes these from the environment, and reads
+// them at two different moments: EPICS_CA_SERVER_PORT (the default port, e.g. for the
+// auto-address-list broadcasts) when the context is created, and EPICS_CA_ADDR_LIST/
+// EPICS_CA_AUTO_ADDR_LIST only when the context creates its first channel (that's when its
+// UDP search interface is built). The constructor therefore sets all three, creates the
+// context *and* one throwaway channel to force that second read, and restores the environment
+// -- after which this client's configuration is fixed, regardless of other clients, the
+// process environment, or which thread later creates channels in it.
 class GateClient {
 public:
-    GateClient(const std::string& name, const std::string& addr_list, bool auto_addr, int port) : name(name) {
-        if (!ca_current_context()) ca_context_create(ca_enable_preemptive_callback);
-        if (!addr_list.empty()) setenv("EPICS_CA_ADDR_LIST", with_port(addr_list, port).c_str(), 1);
-        setenv("EPICS_CA_AUTO_ADDR_LIST", auto_addr ? "YES" : "NO", 1);
-        ctx = ca_current_context();
+    GateClient(const std::string& name, const std::string& addr_list, bool auto_addr, int port) : name(name), ctx(NULL) {
+        std::unique_ptr<EnvGuard> addrEnv, portEnv;
+        if (!addr_list.empty()) addrEnv.reset(new EnvGuard("EPICS_CA_ADDR_LIST", with_port(addr_list, port)));
+        EnvGuard autoEnv("EPICS_CA_AUTO_ADDR_LIST", auto_addr ? "YES" : "NO");
+        if (port > 0) portEnv.reset(new EnvGuard("EPICS_CA_SERVER_PORT", std::to_string(port)));
+
+        ca_client_context* prev = ca_current_context();
+        if (prev) ca_detach_context();
+        if (ca_context_create(ca_enable_preemptive_callback) == ECA_NORMAL) {
+            ctx = ca_current_context();
+            // Never searched for: cleared before the search timer first fires.
+            chid probe = NULL;
+            std::string probeName = "gateway:client:" + name + ":init";
+            if (ca_create_channel(probeName.c_str(), NULL, NULL, CA_PRIORITY_DEFAULT, &probe) == ECA_NORMAL)
+                ca_clear_channel(probe);
+            ca_detach_context();
+        }
+        if (prev) ca_attach_context(prev);
     }
-    ~GateClient() { ca_context_destroy(); }
-    ca_client_context* getCtx() { return ctx; }
+    ~GateClient() {
+        if (!ctx) return;
+        ca_client_context* prev = ca_current_context();
+        if (prev == ctx) prev = NULL;
+        else if (prev) ca_detach_context();
+        ca_attach_context(ctx);
+        ca_context_destroy();  // destroys the current context and detaches it
+        if (prev) ca_attach_context(prev);
+    }
+    GateClient(const GateClient&) = delete;
+    GateClient& operator=(const GateClient&) = delete;
+    ca_client_context* getCtx() const { return ctx; }
 private:
     std::string name;
     ca_client_context* ctx;
@@ -98,6 +177,10 @@ struct GateChannel {
     std::string name;
     chid caChid;
     ASMEMBERPVT asMember;
+    // The owning GateClient's context; see CaContextGuard. GateClients are never destroyed
+    // while the gateway runs (gate_create_client_cmd() refuses to redefine one), so this
+    // stays valid for the channel's whole lifetime.
+    ca_client_context* caCtx;
 
     struct MaskSub {
         evid caEvid;
@@ -147,7 +230,9 @@ struct GateChannel {
     std::condition_variable readyCv;
     bool ready = false;
 
-    GateChannel(const char* name, const char* upstream_name, const char* as_group) : name(name), caChid(NULL), asMember(NULL) {
+    GateChannel(const char* name, const char* upstream_name, const char* as_group, ca_client_context* ctx)
+        : name(name), caChid(NULL), asMember(NULL), caCtx(ctx) {
+        CaContextGuard guard(caCtx);
         ca_create_channel(upstream_name, ca_conn_cb, this, 20, &caChid);
         long as_status = asAddMember(&asMember, as_group);
         if (as_status && as_status != S_asLib_asNotActive)
@@ -772,6 +857,7 @@ static void refresh_static_meta(GateChannel* gchan, chid ch, GateChannel::MaskSu
     short native = ca_field_type(ch);
     short ctrl_type = (short)(native + 28); // DBR_CTRL_STRING(28) + native basic type (0..6)
     auto* ctx = new MetaRefreshCtx{gchan, pending_msub, pending_data};
+    CaContextGuard guard(gchan->caCtx);
     ca_array_get_callback(ctrl_type, 1, ch, ca_meta_cb, ctx);
     ca_flush_io();
 }
@@ -856,6 +942,7 @@ static std::shared_ptr<GateChannel::MaskSub> get_or_create_mask_sub(GateChannel*
     // at NELM (CA pads non-autosize subscriptions to the requested count with
     // zeros), permanently masking the real, current count from everything
     // downstream that reads it.
+    CaContextGuard guard(gchan->caCtx);
     ca_create_subscription(time_type, 0, ch, select, ca_event_cb, msub.get(), &msub->caEvid);
     ca_flush_io();
     return msub;
@@ -874,21 +961,10 @@ static void ca_conn_cb(struct connection_handler_args args) {
     notify_stats_changed();
 }
 
-static ca_client_context* g_ca_ctx = NULL;
-
-// Every entry point below can run on whichever rsrv server thread happens to be handling
-// the client request (e.g. "CAS-UDP"/"CAS-TCP"/per-client threads) -- not the main thread
-// that gate_init() created the CA client context on. CA contexts are per-thread, so any
-// ca_*() call from a thread with no attached context silently fails (upstream channel never
-// connects, put/subscribe never happens) rather than crashing. Call this first.
-static void ensure_ca_context() {
-    if (!ca_current_context() && g_ca_ctx) ca_attach_context(g_ca_ctx);
-}
-
 extern "C" {
+// Nothing to set up: every upstream CA client context belongs to a GateClient
+// (gate_create_client_cmd), and every libca call selects the right one -- see CaContextGuard.
 void gate_init(void) {
-    if (!ca_current_context()) ca_context_create(ca_enable_preemptive_callback);
-    g_ca_ctx = ca_current_context();
 }
 
 
@@ -935,7 +1011,6 @@ static RouteMatch match_routes_locked(const char* name, const char* hostname) {
 // that client. Routes are re-evaluated even on a channels-map cache hit -- a cache hit must
 // not bypass the per-client DENY FROM check.
 void* gate_create_channel_for_client(const char* name, const char* hostname) {
-    ensure_ca_context();
 
     // Statistics PVs (gateInitStats) are gateway-internal: they bypass route/DENY matching
     // entirely (they're not upstream-routed PVs at all), which also means the UDP
@@ -948,7 +1023,7 @@ void* gate_create_channel_for_client(const char* name, const char* hostname) {
     }
 
     GateChannel* result = nullptr;
-    bool created = false;
+    ca_client_context* createdCtx = nullptr;
     {
         std::lock_guard<std::mutex> lock(channelsMutex);
         std::lock_guard<std::mutex> rlock(routesMutex);
@@ -974,15 +1049,23 @@ void* gate_create_channel_for_client(const char* name, const char* hostname) {
                              rc2, name, route.target.c_str());
             }
         }
-        auto gchan = std::make_shared<GateChannel>(name, upstream_name.c_str(), route.as_group.c_str());
+        // Unknown client: gate_add_pv_cmd() already warned when the route was added.
+        auto cit = clients.find(route.client_name);
+        if (cit == clients.end() || !cit->second->getCtx()) return NULL;
+        createdCtx = cit->second->getCtx();
+        auto gchan = std::make_shared<GateChannel>(name, upstream_name.c_str(), route.as_group.c_str(), createdCtx);
         channels[name] = gchan;
         result = gchan.get();
-        created = true;
     }
-    ca_flush_io();
     // notify_stats_changed() re-locks channelsMutex itself (via count_channels()) -- must run
     // only after the lock_guards above have gone out of scope, not while still held.
-    if (created) notify_stats_changed(); // a new channel changes "pvtotal"
+    if (createdCtx) {
+        {
+            CaContextGuard guard(createdCtx);
+            ca_flush_io();
+        }
+        notify_stats_changed(); // a new channel changes "pvtotal"
+    }
     return (void*)result;
 }
 
@@ -1126,8 +1209,8 @@ int gate_get_count(void* handle, int buffer_type, void* pbuffer, long* nRequest,
 
 int gate_put(void* channel, int src_type, const void* psrc, long no_elements) {
     if (is_stat_handle(channel)) return -1; // statistics PVs are read-only
-    ensure_ca_context();
     GateChannel* gchan = (GateChannel*)channel;
+    CaContextGuard guard(gchan->caCtx);
     int rc = ca_array_put(src_type, no_elements, gchan->caChid, psrc);
     ca_flush_io();
     return rc;
@@ -1156,8 +1239,8 @@ static void ca_put_notify_cb(struct event_handler_args args) {
 void gate_put_notify(void* channel, int src_type, const void* psrc, long no_elements,
                       gate_put_notify_callback* cb, void* user_arg) {
     if (is_stat_handle(channel)) { cb(user_arg, -1); return; } // statistics PVs are read-only
-    ensure_ca_context();
     GateChannel* gchan = (GateChannel*)channel;
+    CaContextGuard guard(gchan->caCtx);
     auto* ctx = new PutNotifyCtx{cb, user_arg};
     int rc = ca_array_put_callback(src_type, no_elements, gchan->caChid, psrc, ca_put_notify_cb, ctx);
     if (rc != ECA_NORMAL) {
@@ -1187,7 +1270,6 @@ void* gate_add_event(void* channel, gate_event_callback* cb, void* user_arg, voi
         gate_deliver(sub->queue, sub, sub->cb, sub->user_arg, sub->dbchan, nullptr);
         return (void*)sub;
     }
-    ensure_ca_context();
     GateChannel* gchan = (GateChannel*)channel;
     auto msub = get_or_create_mask_sub(gchan, gchan->caChid, select);
     auto* usub = new GateChannel::MaskSub::UserSub{(void (*)(void*, void*, int, void*))cb, user_arg, real_dbchan, msub.get(), q};
@@ -1260,8 +1342,22 @@ void gate_cancel_event(void* event_id) {
 }
 
 void gate_create_client_cmd(const char* name, const char* addr_list, int auto_addr, int port) {
+    if (!name || !name[0]) {
+        errlogPrintf("gate_create_client_cmd: empty client name, ignoring\n");
+        return;
+    }
     std::lock_guard<std::mutex> lock(channelsMutex);
-    clients[name] = std::make_shared<GateClient>(name, addr_list ? addr_list : "", auto_addr != 0, port);
+    // Existing channels hold on to their client's CA context, so a client can't be replaced.
+    if (clients.count(name)) {
+        errlogPrintf("gate_create_client_cmd: client '%s' already exists, ignoring\n", name);
+        return;
+    }
+    auto client = std::make_shared<GateClient>(name, addr_list ? addr_list : "", auto_addr != 0, port);
+    if (!client->getCtx()) {
+        errlogPrintf("gate_create_client_cmd: failed to create CA context for client '%s'\n", name);
+        return;
+    }
+    clients[name] = client;
     errlogPrintf("gate_create_client_cmd: client '%s' created (addr_list='%s' auto_addr=%d port=%d)\n",
                  name, addr_list ? addr_list : "", auto_addr, port);
 }
@@ -1364,6 +1460,13 @@ void gate_add_pv_cmd(const char* pattern, const char* client_name, const char* a
         route.client_name = client_name ? client_name : "";
         route.as_group = as_group ? as_group : "";
         route.target = target ? target : "";
+        {
+            std::lock_guard<std::mutex> clock(channelsMutex);
+            if (!clients.count(route.client_name))
+                errlogPrintf("gate_add_pv_cmd: warning: client '%s' does not exist (yet); "
+                             "pattern '%s' won't match anything until it's created\n",
+                             route.client_name.c_str(), pattern);
+        }
         std::lock_guard<std::mutex> lock(routesMutex);
         routes.push_back(route);
         errlogPrintf("gate_add_pv_cmd: route added: pattern='%s' client='%s' as_group='%s' target='%s'\n",
