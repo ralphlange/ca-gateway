@@ -271,6 +271,7 @@ def run_gateway(
     put_log_json_addr: Optional[str] = None,
     put_log_json_config: int = 1,
     put_log_file: Optional[str] = None,
+    extra_commands: Optional[List[str]] = None,
 ) -> Generator[subprocess.Popen, None, None]:
     """
     Starts a gateway process with the provided configuration.
@@ -321,6 +322,11 @@ def run_gateway(
         "-putlog <file>"); if given, loaded via `gateLoadPutLogFile`. Always logs every
         trapped write (no config level -- the old file writer had none, unlike the network
         sinks above).
+
+    extra_commands : list of str, optional
+        Additional iocsh commands, issued after the default client and all of the above are
+        set up but before ``gateLoadConfig`` -- e.g. ``gateCreateClient``/``gateAddPV`` for
+        a second upstream IOC, which the single-client pvlist translation can't express.
     """
     pvlist_text = ""
     if pvlist and os.path.exists(pvlist):
@@ -360,6 +366,8 @@ def run_gateway(
                 startup_commands += f"gateLoadPutLogJson {put_log_json_addr} {put_log_json_config} 5.0\n"
             if put_log_file:
                 startup_commands += f"gateLoadPutLogFile {put_log_file}\n"
+            for command in extra_commands or []:
+                startup_commands += command + "\n"
             startup_commands += f"gateLoadConfig {config_fp.name}\n"
             proc.stdin.write(startup_commands.encode())
             proc.stdin.flush()
@@ -525,6 +533,7 @@ def custom_environment(
     ioc_args: Optional[List[str]] = None,
     gateway_args: Optional[List[str]] = None,
     put_log_file: Optional[str] = None,
+    gateway_commands: Optional[List[str]] = None,
 ) -> Generator[EnvironmentInfo, None, None]:
     """
     Run a gateway and an IOC in a custom environment, specifying the raw
@@ -551,6 +560,9 @@ def custom_environment(
 
     put_log_file : str, optional
         Forwarded to `run_gateway`'s ``put_log_file`` -- see there.
+
+    gateway_commands : list of str, optional
+        Forwarded to `run_gateway`'s ``extra_commands`` -- see there.
     """
     gateway_args = gateway_args or []
     ioc_args = ioc_args or []
@@ -587,7 +599,12 @@ def custom_environment(
         )
         del gateway_args  # the rsrv-based Gateway has no CLI args to forward
         with (
-            run_gateway(access=access_fp.name, pvlist=pvlist_fp.name, put_log_file=put_log_file),
+            run_gateway(
+                access=access_fp.name,
+                pvlist=pvlist_fp.name,
+                put_log_file=put_log_file,
+                extra_commands=gateway_commands,
+            ),
             run_ioc(*ioc_args, db_file=dbfile_fp.name, dbd_file=dbd_file),
             local_channel_access(),
         ):
