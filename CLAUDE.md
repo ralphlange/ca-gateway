@@ -345,8 +345,10 @@ adapted to run against the `rsrv`-based reimplementation:
   binary installed from elsewhere — and `test_logging.py`/`test_caputlog_network.py` skip on it.
   Previously-skipped files that now run for real: `test_property_cache.py`,
   `test_enum_property_cache.py`'s third test, and `test_logging.py` (11 parametrizations of the
-  local put-log file). Two tests in `test_enum_property_cache.py` remain `xfail` for unfixed
-  bug #58, unrelated.
+  local put-log file). Two legacy V2 bugs that the suite had marked `xfail` don't occur here
+  and the markers were removed: #58 (enum strings not refreshed in the cache, the two other
+  `test_enum_property_cache.py` tests) and #35 (undefined timestamp on a get without a
+  subscription, `test_undefined_timestamp_get_only`). The V2 gateway still fails all three.
 - `test_caputlog_network.py` is new (not from the legacy suite): it covers the text and JSON
   network sinks against a local TCP listener, and the on-change filter.
 - Everything else (`test_simple.py`, the `test_dbe_*.py` files, `test_subscriptions.py`,

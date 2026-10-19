@@ -13,7 +13,6 @@ import logging
 import threading
 import time
 
-import pytest
 from epics import ca, dbr
 
 from . import conftest
@@ -21,7 +20,6 @@ from . import conftest
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.xfail(reason="Unfixed bug #58")
 def test_enum_prop_cache_value_monitor_ctrl_get(
     standard_env: conftest.EnvironmentInfo, prop_supported: bool
 ):
@@ -99,7 +97,6 @@ def test_enum_prop_cache_value_monitor_ctrl_get(
         assert not cond.wait(timeout=1.0)
 
 
-@pytest.mark.xfail(reason="Unfixed bug #58")
 def test_enum_prop_cache_value_get_ctrl_get(
     standard_env: conftest.EnvironmentInfo, prop_supported: bool
 ):

@@ -77,7 +77,7 @@ def test_undefined_timestamp_subscription(
             assert gateway_md["timestamp"] != 0, "2nd CA get timestamp is undefined!"
             assert ioc_md["value"] == gateway_md["value"]
 
-@pytest.mark.xfail(reason="Unfixed bug #35")
+
 def test_undefined_timestamp_get_only(standard_env: conftest.EnvironmentInfo):
     """
     caget on an mbbi - without subscription configured.
